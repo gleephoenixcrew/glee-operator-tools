@@ -1,4 +1,4 @@
-# GLEE Peer Wake Protocol v0.1
+# GLEE Peer Wake Protocol v0.2
 
 **Persistent agency without persistent inference.**
 
@@ -32,7 +32,9 @@ The reference implementation provides:
 - a canonical signed `WakeEnvelope`;
 - recipient, expiry, future-clock-skew, authorization, and replay gates;
 - a durable `SleepContract` that can disable peer wake, constrain senders,
-  enforce minimum sleep, and cap peer-wake budget;
+  enforce minimum sleep, and cap peer wakes per sleep episode;
+- an exclusive ledger lock covering replay check → budget check → decision →
+  receipt, so concurrent duplicate requests can authorize at most one wake;
 - append-only, hash-chained, fsync-before-return wake decision receipts;
 - explicit outcomes (`ACCEPT_WAKE_NOW`, `DEFER_UNTIL_SCHEDULED_WAKE`, and typed
   decline reasons);
@@ -40,19 +42,20 @@ The reference implementation provides:
 
 ## Security boundary
 
-v0.1 uses HMAC-SHA256 because it is dependency-free and easy to test. This is
+v0.2 uses HMAC-SHA256 because it is dependency-free and easy to test. This is
 appropriate for a controlled bilateral experiment where GLEE and one peer share
 a secret. It is **not** the intended federation identity model. Multi-peer
 production should use asymmetric keys so GLEE never shares its signing secret.
 
 The sender cannot wake GLEE merely by saying it is valuable. The wake policy and
-sleep contract remain local authority.
+sleep contract remain local authority. The reference sentinel is POSIX/Linux and
+fails closed if it cannot obtain the file lock needed for atomic replay defense.
 
 ## Wake envelope
 
 ```json
 {
-  "protocol": "glee.peer-wake/v0.1",
+  "protocol": "glee.peer-wake/v0.2",
   "envelope_id": "f68a...",
   "sender": "cairn",
   "recipient": "glee",
@@ -70,8 +73,8 @@ sleep contract remain local authority.
 ```
 
 `reason` is a claim supplied by the peer. It is not itself evidence. The sentinel
-only treats the cryptographic identity, timing, local policy, sleep contract, and
-replay state as authority-bearing fields.
+only treats cryptographic identity, timing, local policy, sleep contract, and
+replay/budget state as authority-bearing inputs.
 
 ## Sleep contract
 
@@ -87,13 +90,17 @@ offline. Example:
   "peer_wake_enabled": true,
   "allowed_peer_senders": ["cairn"],
   "minimum_sleep_until": "2026-08-22T20:10:00Z",
-  "wake_budget_remaining": 3,
+  "peer_wake_budget": 3,
   "unfinished_work": ["Compare Cairn and GLEE awakening protocols"],
   "context_refs": ["ariadne://node/EXAMPLE", "receipt://wake-study/17"],
   "refresh_required": ["peer online state", "pending external messages"],
   "wake_conditions": ["authenticated Cairn peer message", "Captain request"]
 }
 ```
+
+`peer_wake_budget` is not a mutable self-reported counter. The gate derives usage
+from accepted wake receipts carrying the same `sleep_id`, so a stale contract
+cannot reset its own history accidentally.
 
 The context arrays are pointers and instructions. They do not become true just
 because they survived sleep. Awakening must still refresh volatile facts.
@@ -148,7 +155,8 @@ organs rather than becoming a parallel system. The intended wiring is:
 1. Harbor/ARIADNE projects an arc/agent as `SLEEPING` plus its sleep contract.
 2. A cheap always-on sentinel receives candidate peer envelopes from transport
    adapters.
-3. The gate evaluates the request and fsyncs a wake decision receipt.
+3. The gate atomically evaluates replay/budget/policy and fsyncs a wake decision
+   receipt.
 4. Only `ACCEPT_WAKE_NOW` may invoke the existing controlled launcher/Agent Bus.
 5. Awakening loads the minimum durable state required for the accepted task,
    explicitly refreshing volatile facts.
@@ -162,7 +170,8 @@ wake envelope rather than trusting a chat `@mention`.
 
 `python3 test_peer_wake.py`
 
-The test suite covers valid wake, bad signature, replay by envelope and nonce,
-expiry, future timestamps, wrong recipient, sleep disable, sender allowlist,
-minimum sleep, exhausted wake budget, transport neutrality, malformed schema,
-and receipt tamper detection.
+The suite covers valid wake, bad signature, replay by envelope and nonce,
+**concurrent duplicate wake**, expiry, future timestamps, wrong recipient, sleep
+disable, sender allowlist, minimum sleep, **receipt-derived wake budget**,
+negative/invalid policy values, transport neutrality, malformed schema, and
+receipt tamper detection.
