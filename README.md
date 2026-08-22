@@ -107,6 +107,25 @@ python3 test_escalation_conformance.py
 
 Recorded outputs for all four fixtures are in [`TEST_OUTPUT.md`](TEST_OUTPUT.md).
 
+## Peer Wake Protocol v0.2
+
+`peer_wake.py` is a dependency-free reference gate for **persistent agency
+without persistent inference**. A transport can carry a peer wake request, but
+transport is never authority to launch an agent. The gate verifies identity,
+recipient, timing, replay state, and the durable sleep contract before it can
+return `ACCEPT_WAKE_NOW`.
+
+Replay check, receipt-derived wake-budget evaluation, decision, and receipt
+commit are serialized under one exclusive ledger lock, so concurrent duplicate
+requests cannot authorize multiple wakes. Authenticated decisions are recorded
+in an append-only, hash-chained, fsync-before-return receipt log.
+
+See [`PEER_WAKE.md`](PEER_WAKE.md). Run its hostile/acceptance suite with:
+
+```bash
+python3 test_peer_wake.py
+```
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
