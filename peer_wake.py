@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""GLEE Peer Wake Protocol v0.1.
+"""GLEE Peer Wake Protocol v0.2.
 
-A transport-neutral, dependency-free reference implementation for deciding
-whether an authenticated external peer request is sufficient reason to wake a
-sleeping agent.
+Transport-neutral, dependency-free reference control plane for deciding whether
+an authenticated external peer request is sufficient reason to wake a sleeping
+agent.
 
-Important boundary: transport is never authority. Email, AICQ, Exuvia, Matrix,
-or any other carrier may deliver a WakeEnvelope, but only this gate (or an
-implementation with equivalent checks) may authorize a wake.
+Boundary: transport is never authority. Email, AICQ, Exuvia, Matrix, or another
+carrier may deliver a WakeEnvelope, but only this gate (or an implementation
+with equivalent checks) may authorize expensive inference.
 """
 
 from __future__ import annotations
@@ -19,14 +19,20 @@ import json
 import os
 import sys
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - GLEE's supported sentinel host is POSIX/Linux.
+    fcntl = None  # type: ignore[assignment]
 
 
-PROTOCOL = "glee.peer-wake/v0.1"
+PROTOCOL = "glee.peer-wake/v0.2"
 SIGNATURE_ALG = "hmac-sha256"
 
 
@@ -125,20 +131,22 @@ class WakeEnvelope:
         missing = sorted(required.difference(value))
         if missing:
             raise ValueError("missing required fields: " + ", ".join(missing))
-        fields = {f.name for f in cls.__dataclass_fields__.values()}
+        fields = set(cls.__dataclass_fields__)
         unknown = sorted(set(value).difference(fields))
         if unknown:
             raise ValueError("unknown fields: " + ", ".join(unknown))
-        return cls(**dict(value))
+        try:
+            return cls(**dict(value))
+        except TypeError as exc:
+            raise ValueError(f"invalid wake envelope: {exc}") from exc
 
 
 @dataclass(frozen=True)
 class SleepContract:
     """Durable state written before an agent voluntarily sleeps.
 
-    The context fields are informational pointers, not automatically trusted
-    facts. Awakening code should resolve/refresh them according to their own
-    evidence policies.
+    Context fields are pointers/instructions, not automatically trusted facts.
+    Awakening must still refresh volatile facts according to evidence policy.
     """
 
     sleep_id: str
@@ -148,7 +156,7 @@ class SleepContract:
     peer_wake_enabled: bool = True
     allowed_peer_senders: Tuple[str, ...] = ()
     minimum_sleep_until: str = ""
-    wake_budget_remaining: Optional[int] = None
+    peer_wake_budget: Optional[int] = None
     unfinished_work: Tuple[str, ...] = ()
     context_refs: Tuple[str, ...] = ()
     refresh_required: Tuple[str, ...] = ()
@@ -156,6 +164,10 @@ class SleepContract:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "SleepContract":
+        fields = set(cls.__dataclass_fields__)
+        unknown = sorted(set(value).difference(fields))
+        if unknown:
+            raise ValueError("unknown sleep-contract fields: " + ", ".join(unknown))
         normalized = dict(value)
         for name in (
             "allowed_peer_senders",
@@ -165,8 +177,14 @@ class SleepContract:
             "wake_conditions",
         ):
             if name in normalized:
-                normalized[name] = tuple(normalized[name])
-        return cls(**normalized)
+                raw = normalized[name]
+                if not isinstance(raw, (list, tuple)):
+                    raise ValueError(f"sleep contract {name} must be an array")
+                normalized[name] = tuple(raw)
+        try:
+            return cls(**normalized)
+        except TypeError as exc:
+            raise ValueError(f"invalid sleep contract: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -193,9 +211,8 @@ class WakePolicy:
 class Keyring:
     """Maps (sender, key_id) -> HMAC secret bytes.
 
-    HMAC is deliberately the dependency-free v0 mechanism. Production peer
-    federation should prefer asymmetric identity keys so peers never share a
-    signing secret.
+    HMAC is deliberately the dependency-free bilateral v0 mechanism. Production
+    federation should use asymmetric identity keys so peers never share secrets.
     """
 
     def __init__(self, keys: Mapping[Tuple[str, str], bytes]):
@@ -206,14 +223,11 @@ class Keyring:
 
 
 class ReceiptLog:
-    """Append-only, hash-chained wake decision receipts.
-
-    A valid authenticated envelope is marked consumed once a terminal/deferred
-    decision is recorded. Invalid signatures are not allowed to reserve a nonce.
-    """
+    """Append-only, hash-chained wake decisions with an exclusive commit lock."""
 
     def __init__(self, path: os.PathLike[str] | str):
         self.path = Path(path)
+        self.lock_path = Path(str(self.path) + ".lock")
 
     def _records(self) -> Iterable[Dict[str, Any]]:
         if not self.path.exists():
@@ -229,6 +243,23 @@ class ReceiptLog:
                     raise ValueError(f"receipt log malformed at line {line_no}: {exc}") from exc
         return records
 
+    @contextmanager
+    def exclusive_lock(self) -> Iterator[None]:
+        """Serialize replay check + policy decision + receipt commit.
+
+        The sentinel is a POSIX/Linux organ. If file locking is unavailable we
+        fail closed rather than pretending the replay gate is atomic.
+        """
+        if fcntl is None:
+            raise OSError("peer wake receipt locking requires POSIX fcntl")
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
     def consumed(self, envelope: WakeEnvelope) -> bool:
         for record in self._records():
             if record.get("envelope_id") == envelope.envelope_id:
@@ -236,6 +267,14 @@ class ReceiptLog:
             if record.get("sender") == envelope.sender and record.get("nonce") == envelope.nonce:
                 return True
         return False
+
+    def accepted_wakes_for_sleep(self, sleep_id: str) -> int:
+        return sum(
+            1
+            for record in self._records()
+            if record.get("sleep_id") == sleep_id
+            and record.get("decision") == WakeDecision.ACCEPT_WAKE_NOW.value
+        )
 
     def verify_chain(self) -> Tuple[bool, str]:
         prev = ""
@@ -248,11 +287,17 @@ class ReceiptLog:
             prev = record["receipt_hash"]
         return True, prev
 
-    def append(self, envelope: WakeEnvelope, result: DecisionResult, observed_at: str) -> Dict[str, Any]:
+    def _append_unlocked(
+        self,
+        envelope: WakeEnvelope,
+        result: DecisionResult,
+        observed_at: str,
+        sleep_contract: Optional[SleepContract],
+    ) -> Dict[str, Any]:
         ok, head = self.verify_chain()
         if not ok:
             raise ValueError(f"refusing to append to invalid receipt chain: {head}")
-        core = {
+        record: Dict[str, Any] = {
             "protocol": PROTOCOL,
             "observed_at": observed_at,
             "envelope_id": envelope.envelope_id,
@@ -262,9 +307,9 @@ class ReceiptLog:
             "nonce": envelope.nonce,
             "decision": result.decision.value,
             "reason": result.reason,
+            "sleep_id": sleep_contract.sleep_id if sleep_contract else "",
             "prev_hash": head,
         }
-        record = dict(core)
         record["receipt_hash"] = receipt_hash(record)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
@@ -272,6 +317,16 @@ class ReceiptLog:
             handle.flush()
             os.fsync(handle.fileno())
         return record
+
+    def append(
+        self,
+        envelope: WakeEnvelope,
+        result: DecisionResult,
+        observed_at: str,
+        sleep_contract: Optional[SleepContract] = None,
+    ) -> Dict[str, Any]:
+        with self.exclusive_lock():
+            return self._append_unlocked(envelope, result, observed_at, sleep_contract)
 
 
 def canonical_json(value: Any) -> str:
@@ -284,11 +339,14 @@ def receipt_hash(record: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(unsigned).encode("utf-8")).hexdigest()
 
 
-def parse_time(value: str) -> datetime:
-    if not value:
-        raise ValueError("empty timestamp")
+def parse_time(value: Any) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError("timestamp must be a non-empty string")
     normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
-    dt = datetime.fromisoformat(normalized)
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"invalid ISO-8601 timestamp {value!r}") from exc
     if dt.tzinfo is None:
         raise ValueError("timestamp must include timezone")
     return dt.astimezone(timezone.utc)
@@ -329,19 +387,35 @@ def evaluate_wake(
         return DecisionResult(
             decision=decision,
             reason=reason,
-            envelope_id=envelope.envelope_id,
-            sender=envelope.sender,
-            recipient=envelope.recipient,
+            envelope_id=str(envelope.envelope_id),
+            sender=str(envelope.sender),
+            recipient=str(envelope.recipient),
             envelope_hash=envelope.envelope_hash(),
         )
 
+    string_fields = {
+        "protocol": envelope.protocol,
+        "envelope_id": envelope.envelope_id,
+        "sender": envelope.sender,
+        "recipient": envelope.recipient,
+        "nonce": envelope.nonce,
+        "reason": envelope.reason,
+        "task": envelope.task,
+        "key_id": envelope.key_id,
+        "signature_alg": envelope.signature_alg,
+        "signature": envelope.signature,
+    }
+    if any(not isinstance(value, str) for value in string_fields.values()):
+        return result(WakeDecision.DECLINED_MALFORMED, "identity/content fields must be strings")
     if envelope.protocol != PROTOCOL:
         return result(WakeDecision.DECLINED_MALFORMED, f"unsupported protocol={envelope.protocol}")
     if not envelope.envelope_id or not envelope.nonce or not envelope.sender or not envelope.recipient:
         return result(WakeDecision.DECLINED_MALFORMED, "identity/replay fields must be non-empty")
     if not envelope.reason.strip() or not envelope.task.strip():
         return result(WakeDecision.DECLINED_MALFORMED, "reason and task must be non-empty")
-    if not (0 <= int(envelope.priority) <= 100):
+    if isinstance(envelope.priority, bool) or not isinstance(envelope.priority, int):
+        return result(WakeDecision.DECLINED_MALFORMED, "priority must be an integer")
+    if not (0 <= envelope.priority <= 100):
         return result(WakeDecision.DECLINED_MALFORMED, "priority must be between 0 and 100")
 
     if policy.authorized_senders and envelope.sender not in policy.authorized_senders:
@@ -373,14 +447,25 @@ def evaluate_wake(
         return result(WakeDecision.DECLINED_REPLAY, "envelope_id or sender nonce already consumed")
 
     if sleep_contract is not None:
+        if not isinstance(sleep_contract.sleep_id, str) or not sleep_contract.sleep_id:
+            return result(WakeDecision.DECLINED_SLEEP_POLICY, "sleep_id must be non-empty")
         if sleep_contract.agent_id != policy.recipient:
             return result(WakeDecision.DECLINED_SLEEP_POLICY, "sleep contract belongs to another agent")
         if not sleep_contract.peer_wake_enabled:
             return result(WakeDecision.DECLINED_PEER_WAKE_DISABLED, "sleep contract disabled peer wake")
         if sleep_contract.allowed_peer_senders and envelope.sender not in sleep_contract.allowed_peer_senders:
             return result(WakeDecision.DECLINED_SLEEP_POLICY, "sender not permitted by sleep contract")
-        if sleep_contract.wake_budget_remaining is not None and sleep_contract.wake_budget_remaining <= 0:
-            return result(WakeDecision.DEFER_UNTIL_SCHEDULED_WAKE, "peer wake budget exhausted")
+        if sleep_contract.peer_wake_budget is not None:
+            if isinstance(sleep_contract.peer_wake_budget, bool) or not isinstance(sleep_contract.peer_wake_budget, int):
+                return result(WakeDecision.DECLINED_SLEEP_POLICY, "peer_wake_budget must be an integer")
+            if sleep_contract.peer_wake_budget < 0:
+                return result(WakeDecision.DECLINED_SLEEP_POLICY, "peer_wake_budget cannot be negative")
+            used = receipts.accepted_wakes_for_sleep(sleep_contract.sleep_id)
+            if used >= sleep_contract.peer_wake_budget:
+                return result(
+                    WakeDecision.DEFER_UNTIL_SCHEDULED_WAKE,
+                    f"peer wake budget exhausted ({used}/{sleep_contract.peer_wake_budget})",
+                )
         if sleep_contract.minimum_sleep_until:
             try:
                 minimum_sleep_until = parse_time(sleep_contract.minimum_sleep_until)
@@ -405,24 +490,28 @@ def evaluate_and_record(
     now: Optional[datetime] = None,
 ) -> DecisionResult:
     observed = (now or utc_now()).astimezone(timezone.utc)
-    result = evaluate_wake(
-        envelope,
-        policy=policy,
-        keyring=keyring,
-        receipts=receipts,
-        sleep_contract=sleep_contract,
-        now=observed,
-    )
 
-    # Only authenticated requests consume an envelope/nonce. A forged request
-    # must not be able to preemptively reserve a legitimate peer's replay token.
-    if result.decision not in {
-        WakeDecision.DECLINED_UNAUTHORIZED,
-        WakeDecision.DECLINED_BAD_SIGNATURE,
-        WakeDecision.DECLINED_MALFORMED,
-    }:
-        receipts.append(envelope, result, iso_z(observed))
-    return result
+    # The lock covers the replay read, budget read, decision, and append. Without
+    # this, two sentinel workers could both observe "not consumed" and both wake.
+    with receipts.exclusive_lock():
+        result = evaluate_wake(
+            envelope,
+            policy=policy,
+            keyring=keyring,
+            receipts=receipts,
+            sleep_contract=sleep_contract,
+            now=observed,
+        )
+
+        # Only authenticated requests consume an envelope/nonce. A forged request
+        # must not preemptively reserve a legitimate peer's replay token.
+        if result.decision not in {
+            WakeDecision.DECLINED_UNAUTHORIZED,
+            WakeDecision.DECLINED_BAD_SIGNATURE,
+            WakeDecision.DECLINED_MALFORMED,
+        }:
+            receipts._append_unlocked(envelope, result, iso_z(observed), sleep_contract)
+        return result
 
 
 def _load_json(path: str) -> Dict[str, Any]:
@@ -436,8 +525,7 @@ def _load_json(path: str) -> Dict[str, Any]:
 def _load_keyring(path: str) -> Keyring:
     """Load sender/key_id -> environment-variable key mapping.
 
-    Example:
-      {"cairn": {"default": "CAIRN_GLEE_WAKE_SECRET"}}
+    Example: {"cairn": {"default": "CAIRN_GLEE_WAKE_SECRET"}}
     """
     config = _load_json(path)
     keys: Dict[Tuple[str, str], bytes] = {}
@@ -453,22 +541,20 @@ def _load_keyring(path: str) -> Keyring:
 
 
 def _cmd_sign(args: argparse.Namespace) -> int:
-    data = _load_json(args.input)
-    envelope = WakeEnvelope.from_mapping(data)
+    envelope = WakeEnvelope.from_mapping(_load_json(args.input))
     secret = os.environ.get(args.secret_env)
     if secret is None:
         raise ValueError(f"environment variable {args.secret_env!r} is not set")
-    signed = envelope.signed(secret.encode("utf-8"))
-    print(json.dumps(asdict(signed), indent=2, sort_keys=True))
+    print(json.dumps(asdict(envelope.signed(secret.encode("utf-8"))), indent=2, sort_keys=True))
     return 0
 
 
 def _cmd_decide(args: argparse.Namespace) -> int:
     envelope = WakeEnvelope.from_mapping(_load_json(args.envelope))
     keyring = _load_keyring(args.keyring)
-    sleep_contract = None
-    if args.sleep_contract:
-        sleep_contract = SleepContract.from_mapping(_load_json(args.sleep_contract))
+    sleep_contract = (
+        SleepContract.from_mapping(_load_json(args.sleep_contract)) if args.sleep_contract else None
+    )
     policy = WakePolicy(
         recipient=args.recipient,
         max_future_skew_seconds=args.max_future_skew_seconds,
@@ -481,13 +567,19 @@ def _cmd_decide(args: argparse.Namespace) -> int:
         receipts=ReceiptLog(args.receipts),
         sleep_contract=sleep_contract,
     )
-    print(json.dumps({
-        "decision": result.decision.value,
-        "should_wake": result.should_wake,
-        "reason": result.reason,
-        "envelope_id": result.envelope_id,
-        "envelope_hash": result.envelope_hash,
-    }, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "decision": result.decision.value,
+                "should_wake": result.should_wake,
+                "reason": result.reason,
+                "envelope_id": result.envelope_id,
+                "envelope_hash": result.envelope_hash,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     if result.decision is WakeDecision.ACCEPT_WAKE_NOW:
         return 0
     if result.decision is WakeDecision.DEFER_UNTIL_SCHEDULED_WAKE:
@@ -502,7 +594,7 @@ def _cmd_verify_receipts(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="GLEE Peer Wake Protocol v0.1")
+    parser = argparse.ArgumentParser(description="GLEE Peer Wake Protocol v0.2")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sign = sub.add_parser("sign", help="sign an unsigned wake envelope")
