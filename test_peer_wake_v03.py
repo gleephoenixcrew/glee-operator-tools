@@ -78,7 +78,9 @@ class PeerWakeV03Tests(unittest.TestCase):
         self.requests = RequestReceiptLog(self.request_path)
         self.authorizations = AuthorizationLog(self.auth_path)
         self.keyring = Keyring({("cairn", "default"): SECRET})
-        self.policy = LocalWakePolicy(recipient="glee", authorized_senders=("cairn",))
+        self.policy = LocalWakePolicy(
+            recipient="glee", authorized_senders=("cairn",)
+        )
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -220,16 +222,20 @@ class PeerWakeV03Tests(unittest.TestCase):
 
     def test_expired_future_and_wrong_recipient_are_declined(self):
         expired = self.envelope(
-            envelope_id="expired", nonce="expired",
+            envelope_id="expired",
+            nonce="expired",
             issued_at=z(NOW - timedelta(minutes=10)),
             expires_at=z(NOW - timedelta(seconds=1)),
         )
         future = self.envelope(
-            envelope_id="future", nonce="future",
+            envelope_id="future",
+            nonce="future",
             issued_at=z(NOW + timedelta(minutes=10)),
             expires_at=z(NOW + timedelta(minutes=20)),
         )
-        wrong = self.envelope(envelope_id="wrong", nonce="wrong", recipient="other")
+        wrong = self.envelope(
+            envelope_id="wrong", nonce="wrong", recipient="other"
+        )
         cases = [
             (expired, WakeDecision.DECLINED_EXPIRED),
             (future, WakeDecision.DECLINED_FUTURE_ISSUE),
@@ -265,11 +271,16 @@ class PeerWakeV03Tests(unittest.TestCase):
         self.assertEqual(len(list(self.requests.records())), 1)
         auth_rows = list(self.authorizations.records())
         self.assertEqual(len(auth_rows), 1)
-        self.assertEqual(auth_rows[0]["request_receipt_hash"], authorization.request_receipt_hash)
+        self.assertEqual(
+            auth_rows[0]["request_receipt_hash"],
+            authorization.request_receipt_hash,
+        )
         self.assertNotIn("compute_lease", asdict(self.envelope()))
 
     def test_immediate_authorization_without_distinct_log_fails_closed(self):
-        no_log = self.decide(policy=self.immediate_policy(), contract=self.contract())
+        no_log = self.decide(
+            policy=self.immediate_policy(), contract=self.contract()
+        )
         self.assertEqual(no_log.decision, WakeDecision.DECLINED_LOCAL_POLICY)
         self.assertFalse(no_log.should_wake)
         self.assertEqual(len(list(self.requests.records())), 1)
@@ -286,7 +297,11 @@ class PeerWakeV03Tests(unittest.TestCase):
 
     def test_invalid_local_compute_lease_fails_closed(self):
         policy = self.immediate_policy(compute_lease=ComputeLease(0, 4000, 5))
-        result = self.decide(policy=policy, contract=self.contract(), authorizations=self.authorizations)
+        result = self.decide(
+            policy=policy,
+            contract=self.contract(),
+            authorizations=self.authorizations,
+        )
         self.assertEqual(result.decision, WakeDecision.DECLINED_LOCAL_POLICY)
         self.assertFalse(self.auth_path.exists())
 
@@ -294,14 +309,20 @@ class PeerWakeV03Tests(unittest.TestCase):
         stop = Path(self.tmp.name) / "STOP"
         stop.write_text("stop", encoding="utf-8")
         policy = self.immediate_policy(stop_marker_path=str(stop))
-        result = self.decide(policy=policy, contract=self.contract(), authorizations=self.authorizations)
+        result = self.decide(
+            policy=policy,
+            contract=self.contract(),
+            authorizations=self.authorizations,
+        )
         self.assertEqual(result.decision, WakeDecision.DECLINED_OPERATOR_STOP)
         self.assertFalse(self.auth_path.exists())
         row = list(self.requests.records())[0]
         self.assertTrue(row["stop_marker_present"])
 
     def test_minimum_sleep_interval_queues_even_when_immediate_mode_is_enabled(self):
-        contract = self.contract(minimum_sleep_until=z(NOW + timedelta(minutes=20)))
+        contract = self.contract(
+            minimum_sleep_until=z(NOW + timedelta(minutes=20))
+        )
         result = self.decide(
             policy=self.immediate_policy(),
             contract=contract,
@@ -321,26 +342,41 @@ class PeerWakeV03Tests(unittest.TestCase):
                     policy=self.immediate_policy(),
                     keyring=self.keyring,
                     request_receipts=requests,
-                    authorizations=AuthorizationLog(root / f"{field}-auth.jsonl"),
+                    authorizations=AuthorizationLog(
+                        root / f"{field}-auth.jsonl"
+                    ),
                     sleep_contract=contract,
                     now=NOW,
                 )
-                self.assertEqual(result.decision, WakeDecision.DECLINED_SLEEP_POLICY)
+                self.assertEqual(
+                    result.decision, WakeDecision.DECLINED_SLEEP_POLICY
+                )
 
     def test_local_and_sleep_sender_allowlists_are_separate(self):
-        local = LocalWakePolicy(recipient="glee", authorized_senders=("zoro",))
-        local_result = evaluate_wake(
-            self.envelope(), policy=local, keyring=self.keyring,
-            request_receipts=self.requests, now=NOW,
+        local = LocalWakePolicy(
+            recipient="glee", authorized_senders=("zoro",)
         )
-        self.assertEqual(local_result.decision, WakeDecision.DECLINED_UNAUTHORIZED)
+        local_result = evaluate_wake(
+            self.envelope(),
+            policy=local,
+            keyring=self.keyring,
+            request_receipts=self.requests,
+            now=NOW,
+        )
+        self.assertEqual(
+            local_result.decision, WakeDecision.DECLINED_UNAUTHORIZED
+        )
         contract_result = evaluate_wake(
-            self.envelope(), policy=self.policy, keyring=self.keyring,
+            self.envelope(),
+            policy=self.policy,
+            keyring=self.keyring,
             request_receipts=self.requests,
             sleep_contract=self.contract(allowed_peer_senders=("zoro",)),
             now=NOW,
         )
-        self.assertEqual(contract_result.decision, WakeDecision.DECLINED_SLEEP_POLICY)
+        self.assertEqual(
+            contract_result.decision, WakeDecision.DECLINED_SLEEP_POLICY
+        )
 
     def test_peer_priority_and_reply_channel_do_not_exist_in_v03_envelope(self):
         data = asdict(self.envelope())
@@ -360,14 +396,20 @@ class PeerWakeV03Tests(unittest.TestCase):
     def test_prose_wake_conditions_are_rejected_as_unknown_contract_fields(self):
         data = asdict(self.contract())
         data["wake_conditions"] = ["peer says important"]
-        with self.assertRaisesRegex(ValueError, "unknown sleep-contract fields"):
+        with self.assertRaisesRegex(
+            ValueError, "unknown sleep-contract fields"
+        ):
             SleepContract.from_mapping(data)
 
     def test_inherited_plan_must_be_dated_and_overrulable(self):
         undated = self.contract(inherited_plan_ref="ariadne://plan/1")
         result = evaluate_wake(
-            self.envelope(), policy=self.policy, keyring=self.keyring,
-            request_receipts=self.requests, sleep_contract=undated, now=NOW,
+            self.envelope(),
+            policy=self.policy,
+            keyring=self.keyring,
+            request_receipts=self.requests,
+            sleep_contract=undated,
+            now=NOW,
         )
         self.assertEqual(result.decision, WakeDecision.DECLINED_SLEEP_POLICY)
         locked = self.contract(
@@ -376,8 +418,12 @@ class PeerWakeV03Tests(unittest.TestCase):
             inherited_plan_overrulable=False,
         )
         result = evaluate_wake(
-            self.envelope(), policy=self.policy, keyring=self.keyring,
-            request_receipts=self.requests, sleep_contract=locked, now=NOW,
+            self.envelope(),
+            policy=self.policy,
+            keyring=self.keyring,
+            request_receipts=self.requests,
+            sleep_contract=locked,
+            now=NOW,
         )
         self.assertEqual(result.decision, WakeDecision.DECLINED_SLEEP_POLICY)
         valid = self.contract(
@@ -386,22 +432,34 @@ class PeerWakeV03Tests(unittest.TestCase):
             inherited_plan_overrulable=True,
         )
         result = evaluate_wake(
-            self.envelope(), policy=self.policy, keyring=self.keyring,
-            request_receipts=self.requests, sleep_contract=valid, now=NOW,
+            self.envelope(),
+            policy=self.policy,
+            keyring=self.keyring,
+            request_receipts=self.requests,
+            sleep_contract=valid,
+            now=NOW,
         )
         self.assertEqual(result.decision, WakeDecision.QUEUE_REQUEST)
 
     def test_reason_for_sleep_is_non_authoritative(self):
         first = evaluate_wake(
-            self.envelope(), policy=self.policy, keyring=self.keyring,
+            self.envelope(),
+            policy=self.policy,
+            keyring=self.keyring,
             request_receipts=self.requests,
-            sleep_contract=self.contract(reason_for_sleep="peer must never wake me"),
+            sleep_contract=self.contract(
+                reason_for_sleep="peer must never wake me"
+            ),
             now=NOW,
         )
         second = evaluate_wake(
-            self.envelope(), policy=self.policy, keyring=self.keyring,
+            self.envelope(),
+            policy=self.policy,
+            keyring=self.keyring,
             request_receipts=self.requests,
-            sleep_contract=self.contract(reason_for_sleep="peer should wake immediately"),
+            sleep_contract=self.contract(
+                reason_for_sleep="peer should wake immediately"
+            ),
             now=NOW,
         )
         self.assertEqual(first.decision, WakeDecision.QUEUE_REQUEST)
