@@ -253,33 +253,66 @@ def rank_peers(
     *,
     now: str,
 ) -> Tuple[RankedPeer, ...]:
-    """Rank matching peers using fresh independent evidence only.
+    """Rank matching peers using fresh independent verifier evidence only.
 
-    Self-attestation and repeated evidence IDs contribute zero. A descriptor's
-    mere existence contributes no trust score.
+    A verifier contributes at most one fresh record per peer/capability. Replayed
+    evidence IDs or artifact refs contribute at most once, self-attestation is
+    ignored, and a descriptor's mere existence contributes no trust score.
     """
 
     current = _parse_time(now)
-    by_peer: Dict[str, Dict[str, CapabilityEvidence]] = {}
+    candidates = []
     for item in evidence:
         item.validate()
         if item.capability != capability or item.verifier_id == item.peer_id:
             continue
         if not _evidence_fresh(item, current):
             continue
-        by_peer.setdefault(item.peer_id, {}).setdefault(item.evidence_id, item)
+        candidates.append(item)
+
+    # Build one deterministic latest record per independent verifier. This prevents
+    # one verifier from inflating confidence by emitting many receipts.
+    by_peer_verifier: Dict[str, Dict[str, CapabilityEvidence]] = {}
+    for item in sorted(
+        candidates,
+        key=lambda value: (
+            value.peer_id,
+            value.verifier_id,
+            _parse_time(value.observed_at),
+            value.evidence_id,
+            value.artifact_ref,
+        ),
+    ):
+        by_peer_verifier.setdefault(item.peer_id, {})[item.verifier_id] = item
 
     ranked = []
     for peer in peers:
         peer.validate()
         if capability not in peer.capabilities:
             continue
-        records = tuple(by_peer.get(peer.peer_id, {}).values())
+
+        records = []
+        seen_evidence_ids = set()
+        seen_artifact_refs = set()
+        for verifier_id in sorted(by_peer_verifier.get(peer.peer_id, {})):
+            record = by_peer_verifier[peer.peer_id][verifier_id]
+            if record.evidence_id in seen_evidence_ids or record.artifact_ref in seen_artifact_refs:
+                continue
+            seen_evidence_ids.add(record.evidence_id)
+            seen_artifact_refs.add(record.artifact_ref)
+            records.append(record)
+
         passed = tuple(record for record in records if record.passed)
         score = 0.0
         if passed:
             score = sum(float(record.quality) for record in passed) / len(passed)
-        ranked.append(RankedPeer(peer=peer, score=round(score, 9), independent_evidence_count=len(passed)))
+        ranked.append(
+            RankedPeer(
+                peer=peer,
+                score=round(score, 9),
+                independent_evidence_count=len(passed),
+            )
+        )
 
     return tuple(sorted(ranked, key=lambda item: (-item.score, -item.independent_evidence_count, item.peer.peer_id)))
 
@@ -331,7 +364,7 @@ def evaluate_upgrade(
     if candidate.candidate_score < candidate.baseline_score + policy.minimum_improvement:
         return _verdict(UpgradeDecision.REJECTED, "candidate does not beat baseline", ())
 
-    by_verifier: Dict[str, VerifierResult] = {}
+    grouped: Dict[str, set[VerifierResult]] = {}
     for result in results:
         if result.candidate_id != candidate.candidate_id:
             continue
@@ -339,11 +372,42 @@ def evaluate_upgrade(
             continue
         if result.verifier_id == candidate.source_peer_id:
             continue
-        by_verifier.setdefault(result.verifier_id, result)
+        grouped.setdefault(result.verifier_id, set()).add(result)
 
+    # Exact replays collapse because VerifierResult is frozen/hashable. Conflicting
+    # multiple results from one verifier fail closed instead of cherry-picking.
+    ambiguous = tuple(sorted(verifier_id for verifier_id, items in grouped.items() if len(items) > 1))
+    if ambiguous:
+        return _verdict(
+            UpgradeDecision.REJECTED,
+            "ambiguous duplicate verifier results: " + ",".join(ambiguous),
+            tuple(sorted(grouped)),
+        )
+
+    by_verifier = {
+        verifier_id: next(iter(items))
+        for verifier_id, items in grouped.items()
+        if items
+    }
     verifier_ids = tuple(sorted(by_verifier))
     if len(verifier_ids) < policy.minimum_independent_verifiers:
         return _verdict(UpgradeDecision.REJECTED, "insufficient independent verifiers", verifier_ids)
+
+    artifact_owners: Dict[str, str] = {}
+    duplicate_artifacts = []
+    for verifier_id in verifier_ids:
+        artifact_ref = by_verifier[verifier_id].artifact_ref
+        prior = artifact_owners.get(artifact_ref)
+        if prior is not None and prior != verifier_id:
+            duplicate_artifacts.append(artifact_ref)
+        else:
+            artifact_owners[artifact_ref] = verifier_id
+    if duplicate_artifacts:
+        return _verdict(
+            UpgradeDecision.REJECTED,
+            "independent verifiers reused the same artifact",
+            verifier_ids,
+        )
 
     selected = tuple(by_verifier[verifier_id] for verifier_id in verifier_ids)
     if any(not result.passed for result in selected):
