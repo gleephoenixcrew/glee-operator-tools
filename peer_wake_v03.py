@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from pathlib import import Path
+from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
 
 try:
@@ -132,8 +132,15 @@ class WakeEnvelope:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "WakeEnvelope":
         required = {
-            "protocol", "envelope_id", "sender", "recipient", "issued_at",
-            "expires_at", "nonce", "reason", "task",
+            "protocol",
+            "envelope_id",
+            "sender",
+            "recipient",
+            "issued_at",
+            "expires_at",
+            "nonce",
+            "reason",
+            "task",
         }
         missing = sorted(required.difference(value))
         if missing:
@@ -181,7 +188,7 @@ class SleepContract:
     created_at: str
     rules_revision: str
     model_id: str
-    reason_for_sleep: str = ""  # note only; the sentinel never reasons from it.
+    reason_for_sleep: str = ""  # Note only; the sentinel never reasons from it.
     peer_requests_enabled: bool = True
     allowed_peer_senders: Tuple[str, ...] = ()
     minimum_sleep_until: str = ""
@@ -200,7 +207,9 @@ class SleepContract:
             raise ValueError("unknown sleep-contract fields: " + ", ".join(unknown))
         normalized = dict(value)
         for name in (
-            "allowed_peer_senders", "unfinished_work", "context_refs",
+            "allowed_peer_senders",
+            "unfinished_work",
+            "context_refs",
             "trusted_without_refresh",
         ):
             if name in normalized:
@@ -249,11 +258,21 @@ class LocalWakePolicy:
     def validate(self) -> None:
         if not isinstance(self.recipient, str) or not self.recipient:
             raise ValueError("recipient must be a non-empty string")
-        if isinstance(self.max_future_skew_seconds, bool) or not isinstance(self.max_future_skew_seconds, int) or self.max_future_skew_seconds < 0:
+        if (
+            isinstance(self.max_future_skew_seconds, bool)
+            or not isinstance(self.max_future_skew_seconds, int)
+            or self.max_future_skew_seconds < 0
+        ):
             raise ValueError("max_future_skew_seconds must be a non-negative integer")
-        if isinstance(self.authorization_ttl_seconds, bool) or not isinstance(self.authorization_ttl_seconds, int) or self.authorization_ttl_seconds <= 0:
+        if (
+            isinstance(self.authorization_ttl_seconds, bool)
+            or not isinstance(self.authorization_ttl_seconds, int)
+            or self.authorization_ttl_seconds <= 0
+        ):
             raise ValueError("authorization_ttl_seconds must be a positive integer")
-        if not isinstance(self.accept_peer_requests, bool) or not isinstance(self.immediate_wake_enabled, bool):
+        if not isinstance(self.accept_peer_requests, bool) or not isinstance(
+            self.immediate_wake_enabled, bool
+        ):
             raise ValueError("policy switches must be boolean")
         if not isinstance(self.policy_id, str) or not self.policy_id:
             raise ValueError("policy_id must be a non-empty string")
@@ -261,8 +280,7 @@ class LocalWakePolicy:
             self.compute_lease.validate()
 
     def policy_hash(self) -> str:
-        value = asdict(self)
-        return sha256_json(value)
+        return sha256_json(asdict(self))
 
     def stop_present(self) -> bool:
         return bool(self.stop_marker_path and Path(self.stop_marker_path).exists())
@@ -410,7 +428,11 @@ def evaluate_wake(
     observed = (now or utc_now()).astimezone(timezone.utc)
     policy_hash = ""
 
-    def result(decision: WakeDecision, reason: str, authorization: Optional[WakeAuthorization] = None) -> DecisionResult:
+    def result(
+        decision: WakeDecision,
+        reason: str,
+        authorization: Optional[WakeAuthorization] = None,
+    ) -> DecisionResult:
         return DecisionResult(
             decision=decision,
             reason=reason,
@@ -421,16 +443,40 @@ def evaluate_wake(
         )
 
     strings = (
-        envelope.protocol, envelope.envelope_id, envelope.sender, envelope.recipient,
-        envelope.nonce, envelope.reason, envelope.task, envelope.key_id,
-        envelope.signature_alg, envelope.signature,
+        envelope.protocol,
+        envelope.envelope_id,
+        envelope.sender,
+        envelope.recipient,
+        envelope.nonce,
+        envelope.reason,
+        envelope.task,
+        envelope.key_id,
+        envelope.signature_alg,
+        envelope.signature,
     )
     if any(not isinstance(value, str) for value in strings):
-        return result(WakeDecision.DECLINED_MALFORMED, "envelope identity/content fields must be strings")
+        return result(
+            WakeDecision.DECLINED_MALFORMED,
+            "envelope identity/content fields must be strings",
+        )
     if envelope.protocol != PROTOCOL:
-        return result(WakeDecision.DECLINED_MALFORMED, f"unsupported protocol={envelope.protocol}")
-    if any(not value for value in (envelope.envelope_id, envelope.sender, envelope.recipient, envelope.nonce)):
-        return result(WakeDecision.DECLINED_MALFORMED, "identity/replay fields must be non-empty")
+        return result(
+            WakeDecision.DECLINED_MALFORMED,
+            f"unsupported protocol={envelope.protocol}",
+        )
+    if any(
+        not value
+        for value in (
+            envelope.envelope_id,
+            envelope.sender,
+            envelope.recipient,
+            envelope.nonce,
+        )
+    ):
+        return result(
+            WakeDecision.DECLINED_MALFORMED,
+            "identity/replay fields must be non-empty",
+        )
     if not envelope.reason.strip() or not envelope.task.strip():
         return result(WakeDecision.DECLINED_MALFORMED, "reason and task must be non-empty")
 
@@ -444,10 +490,17 @@ def evaluate_wake(
         return result(WakeDecision.DECLINED_UNAUTHORIZED, "sender not authorized by local policy")
     signature_ok, signature_reason = verify_signature(envelope, keyring)
     if not signature_ok:
-        decision = WakeDecision.DECLINED_UNAUTHORIZED if "no trusted key" in signature_reason else WakeDecision.DECLINED_BAD_SIGNATURE
+        decision = (
+            WakeDecision.DECLINED_UNAUTHORIZED
+            if "no trusted key" in signature_reason
+            else WakeDecision.DECLINED_BAD_SIGNATURE
+        )
         return result(decision, signature_reason)
     if envelope.recipient != policy.recipient:
-        return result(WakeDecision.DECLINED_WRONG_RECIPIENT, f"expected recipient={policy.recipient}")
+        return result(
+            WakeDecision.DECLINED_WRONG_RECIPIENT,
+            f"expected recipient={policy.recipient}",
+        )
 
     try:
         issued_at = parse_time(envelope.issued_at)
@@ -461,11 +514,20 @@ def evaluate_wake(
     if observed >= expires_at:
         return result(WakeDecision.DECLINED_EXPIRED, "wake envelope expired")
     if request_receipts.consumed(envelope):
-        return result(WakeDecision.DECLINED_REPLAY, "envelope_id or sender nonce already consumed")
+        return result(
+            WakeDecision.DECLINED_REPLAY,
+            "envelope_id or sender nonce already consumed",
+        )
     if policy.stop_present():
-        return result(WakeDecision.DECLINED_OPERATOR_STOP, "receiver-owned stop marker is present")
+        return result(
+            WakeDecision.DECLINED_OPERATOR_STOP,
+            "receiver-owned stop marker is present",
+        )
     if not policy.accept_peer_requests:
-        return result(WakeDecision.DECLINED_LOCAL_POLICY, "receiver policy declines peer requests")
+        return result(
+            WakeDecision.DECLINED_LOCAL_POLICY,
+            "receiver policy declines peer requests",
+        )
 
     if sleep_contract is not None:
         try:
@@ -473,18 +535,41 @@ def evaluate_wake(
         except ValueError as exc:
             return result(WakeDecision.DECLINED_SLEEP_POLICY, str(exc))
         if not sleep_contract.peer_requests_enabled:
-            return result(WakeDecision.DECLINED_SLEEP_POLICY, "sleep contract disabled peer requests")
-        if sleep_contract.allowed_peer_senders and envelope.sender not in sleep_contract.allowed_peer_senders:
-            return result(WakeDecision.DECLINED_SLEEP_POLICY, "sender not permitted by sleep contract")
-        if sleep_contract.minimum_sleep_until and observed < parse_time(sleep_contract.minimum_sleep_until):
-            return result(WakeDecision.QUEUE_REQUEST, "minimum sleep interval remains active")
+            return result(
+                WakeDecision.DECLINED_SLEEP_POLICY,
+                "sleep contract disabled peer requests",
+            )
+        if (
+            sleep_contract.allowed_peer_senders
+            and envelope.sender not in sleep_contract.allowed_peer_senders
+        ):
+            return result(
+                WakeDecision.DECLINED_SLEEP_POLICY,
+                "sender not permitted by sleep contract",
+            )
+        if sleep_contract.minimum_sleep_until and observed < parse_time(
+            sleep_contract.minimum_sleep_until
+        ):
+            return result(
+                WakeDecision.QUEUE_REQUEST,
+                "minimum sleep interval remains active",
+            )
 
     if not policy.immediate_wake_enabled:
-        return result(WakeDecision.QUEUE_REQUEST, "authenticated request queued by local default")
+        return result(
+            WakeDecision.QUEUE_REQUEST,
+            "authenticated request queued by local default",
+        )
     if sleep_contract is None:
-        return result(WakeDecision.DECLINED_SLEEP_POLICY, "immediate wake requires a stamped sleep contract")
+        return result(
+            WakeDecision.DECLINED_SLEEP_POLICY,
+            "immediate wake requires a stamped sleep contract",
+        )
     if policy.compute_lease is None:
-        return result(WakeDecision.DECLINED_LOCAL_POLICY, "immediate wake requires a receiver-owned compute lease")
+        return result(
+            WakeDecision.DECLINED_LOCAL_POLICY,
+            "immediate wake requires a receiver-owned compute lease",
+        )
 
     authorization = WakeAuthorization(
         authorization_id=str(uuid.uuid4()),
@@ -492,7 +577,9 @@ def evaluate_wake(
         envelope_hash=envelope.envelope_hash(),
         recipient=policy.recipient,
         issued_at=iso_z(observed),
-        expires_at=iso_z(observed + timedelta(seconds=policy.authorization_ttl_seconds)),
+        expires_at=iso_z(
+            observed + timedelta(seconds=policy.authorization_ttl_seconds)
+        ),
         policy_id=policy.policy_id,
         policy_hash=policy_hash,
         compute_lease=policy.compute_lease,
@@ -500,7 +587,11 @@ def evaluate_wake(
         rules_revision=sleep_contract.rules_revision,
         model_id=sleep_contract.model_id,
     )
-    return result(WakeDecision.AUTHORIZE_WAKE, "receiver locally authorized bounded wake", authorization)
+    return result(
+        WakeDecision.AUTHORIZE_WAKE,
+        "receiver locally authorized bounded wake",
+        authorization,
+    )
 
 
 def evaluate_and_record(
@@ -532,9 +623,19 @@ def evaluate_and_record(
 
         if result.authorization is not None:
             if authorizations is None:
-                result = replace(result, decision=WakeDecision.DECLINED_LOCAL_POLICY, reason="immediate wake requires a distinct authorization log", authorization=None)
+                result = replace(
+                    result,
+                    decision=WakeDecision.DECLINED_LOCAL_POLICY,
+                    reason="immediate wake requires a distinct authorization log",
+                    authorization=None,
+                )
             elif authorizations.path.resolve() == request_receipts.path.resolve():
-                result = replace(result, decision=WakeDecision.DECLINED_LOCAL_POLICY, reason="request and authorization logs must be distinct", authorization=None)
+                result = replace(
+                    result,
+                    decision=WakeDecision.DECLINED_LOCAL_POLICY,
+                    reason="request and authorization logs must be distinct",
+                    authorization=None,
+                )
 
         request_record: Dict[str, Any] = {
             "record_type": "PEER_WAKE_REQUEST_DECISION",
@@ -551,7 +652,9 @@ def evaluate_and_record(
             "policy_id": policy.policy_id,
             "policy_hash": result.policy_hash,
             "stop_marker_present": policy.stop_present(),
-            "authorization_id": result.authorization.authorization_id if result.authorization else "",
+            "authorization_id": (
+                result.authorization.authorization_id if result.authorization else ""
+            ),
         }
 
         if result.authorization is None:
@@ -561,13 +664,18 @@ def evaluate_and_record(
         assert authorizations is not None
         with authorizations.exclusive_lock():
             committed_request = request_receipts.append_unlocked(request_record)
-            final_authorization = replace(result.authorization, request_receipt_hash=committed_request["record_hash"])
+            final_authorization = replace(
+                result.authorization,
+                request_receipt_hash=committed_request["record_hash"],
+            )
             authorization_record = {
                 "record_type": "LOCAL_WAKE_AUTHORIZATION",
                 "protocol": PROTOCOL,
                 **asdict(final_authorization),
             }
-            authorization_record["compute_lease"] = asdict(final_authorization.compute_lease)
+            authorization_record["compute_lease"] = asdict(
+                final_authorization.compute_lease
+            )
             authorizations.append_unlocked(authorization_record)
             return replace(result, authorization=final_authorization)
 
@@ -589,7 +697,9 @@ def _load_keyring(path: str) -> Keyring:
         for key_id, env_name in by_key_id.items():
             secret = os.environ.get(str(env_name))
             if secret is None:
-                raise ValueError(f"missing environment secret {env_name!r} for {sender}/{key_id}")
+                raise ValueError(
+                    f"missing environment secret {env_name!r} for {sender}/{key_id}"
+                )
             keys[(str(sender), str(key_id))] = secret.encode("utf-8")
     return Keyring(keys)
 
@@ -599,17 +709,37 @@ def _cmd_sign(args: argparse.Namespace) -> int:
     secret = os.environ.get(args.secret_env)
     if secret is None:
         raise ValueError(f"environment variable {args.secret_env!r} is not set")
-    print(json.dumps(asdict(envelope.signed(secret.encode("utf-8"))), indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            asdict(envelope.signed(secret.encode("utf-8"))),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
 def _cmd_decide(args: argparse.Namespace) -> int:
     envelope = WakeEnvelope.from_mapping(_load_json(args.envelope))
-    contract = SleepContract.from_mapping(_load_json(args.sleep_contract)) if args.sleep_contract else None
-    lease_values = (args.lease_wall_seconds, args.lease_model_tokens, args.lease_tool_calls)
-    if any(value is not None for value in lease_values) and not all(value is not None for value in lease_values):
+    contract = (
+        SleepContract.from_mapping(_load_json(args.sleep_contract))
+        if args.sleep_contract
+        else None
+    )
+    lease_values = (
+        args.lease_wall_seconds,
+        args.lease_model_tokens,
+        args.lease_tool_calls,
+    )
+    if any(value is not None for value in lease_values) and not all(
+        value is not None for value in lease_values
+    ):
         raise ValueError("all three compute-lease limits must be supplied together")
-    lease = ComputeLease(*lease_values) if all(value is not None for value in lease_values) else None
+    lease = (
+        ComputeLease(*lease_values)
+        if all(value is not None for value in lease_values)
+        else None
+    )
     policy = LocalWakePolicy(
         recipient=args.recipient,
         max_future_skew_seconds=args.max_future_skew_seconds,
@@ -621,7 +751,9 @@ def _cmd_decide(args: argparse.Namespace) -> int:
         stop_marker_path=args.stop_marker or "",
         policy_id=args.policy_id,
     )
-    authorization_log = AuthorizationLog(args.authorizations) if args.authorizations else None
+    authorization_log = (
+        AuthorizationLog(args.authorizations) if args.authorizations else None
+    )
     result = evaluate_and_record(
         envelope,
         policy=policy,
@@ -651,7 +783,13 @@ def _cmd_decide(args: argparse.Namespace) -> int:
 
 def _cmd_verify_log(args: argparse.Namespace) -> int:
     ok, detail = HashChainLog(args.path).verify_chain()
-    print(json.dumps({"valid": ok, "chain_head_or_error": detail}, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {"valid": ok, "chain_head_or_error": detail},
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0 if ok else 4
 
 
@@ -664,7 +802,9 @@ def build_parser() -> argparse.ArgumentParser:
     sign.add_argument("--secret-env", required=True)
     sign.set_defaults(func=_cmd_sign)
 
-    decide = sub.add_parser("decide", help="queue, decline, or locally authorize a peer request")
+    decide = sub.add_parser(
+        "decide", help="queue, decline, or locally authorize a peer request"
+    )
     decide.add_argument("envelope")
     decide.add_argument("--recipient", required=True)
     decide.add_argument("--keyring", required=True)
@@ -683,7 +823,9 @@ def build_parser() -> argparse.ArgumentParser:
     decide.add_argument("--policy-id", default="default")
     decide.set_defaults(func=_cmd_decide)
 
-    verify = sub.add_parser("verify-log", help="verify a request or authorization hash chain")
+    verify = sub.add_parser(
+        "verify-log", help="verify a request or authorization hash chain"
+    )
     verify.add_argument("path")
     verify.set_defaults(func=_cmd_verify_log)
     return parser
