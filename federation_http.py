@@ -106,8 +106,6 @@ class BoundedHttpClient:
 
     def execute(self, request: OutboundRequest, *, now: str) -> HttpResult:
         self._authorize(request, now=now)
-        # Consume before I/O so a timeout or ambiguous transport failure cannot
-        # silently make a supposedly single-use capability reusable.
         self._uses += 1
         result = self._transport(request, self.grant.timeout_seconds, self.grant.max_response_bytes)
         if not 200 <= result.status < 300:
@@ -171,6 +169,7 @@ def build_agent_card_request(manifest_url: str) -> OutboundRequest:
         method="GET",
         url=manifest_url,
         headers=(
+            ("A2A-Version", A2A_PROTOCOL_VERSION),
             ("Accept", "application/json"),
             ("User-Agent", USER_AGENT),
         ),
