@@ -42,9 +42,10 @@ class FederationHttpTests(unittest.TestCase):
     def ok_transport(self, request, timeout, maximum):
         return HttpResult(200, {"content-type": "application/json"}, b'{"ok":true}')
 
-    def test_01_agent_card_request_is_get_only_and_hashable(self):
+    def test_01_agent_card_request_is_get_only_versioned_and_hashable(self):
         request = build_agent_card_request("https://peer.example/.well-known/agent-card.json")
         self.assertEqual(request.method, "GET")
+        self.assertEqual(dict(request.headers)["A2A-Version"], A2A_PROTOCOL_VERSION)
         self.assertEqual(len(request.request_hash), 64)
         self.assertFalse(request.body)
 
@@ -192,7 +193,11 @@ class FederationHttpTests(unittest.TestCase):
             "GET",
             "/.well-known/agent-card.json?x=1",
             body=None,
-            headers={"Accept": "application/json", "User-Agent": "GLEE-Intelligence-Federation/0"},
+            headers={
+                "A2A-Version": "1.0",
+                "Accept": "application/json",
+                "User-Agent": "GLEE-Intelligence-Federation/0",
+            },
         )
         connection.close.assert_called_once()
 
