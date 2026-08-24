@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
@@ -195,11 +195,14 @@ def normalize_peer_descriptor(
         interfaces = raw.get("supportedInterfaces", ())
         if isinstance(interfaces, Sequence) and not isinstance(interfaces, (str, bytes)):
             for interface in interfaces:
-                if isinstance(interface, Mapping):
+                if not isinstance(interface, Mapping):
+                    continue
+                binding = _first_string(interface.get("protocolBinding")).upper()
+                version = _first_string(interface.get("protocolVersion"))
+                if binding == "JSONRPC" and version.startswith("1."):
                     endpoint = _first_string(interface.get("url"), interface.get("endpoint"))
                     if endpoint:
                         break
-        endpoint = endpoint or _first_string(raw.get("url"), raw.get("endpoint"))
         capabilities = _names_from_objects(raw.get("skills", ()), ("id", "name"))
 
     elif protocol is PeerProtocol.MCP_2026_07_28:
@@ -270,8 +273,6 @@ def rank_peers(
             continue
         candidates.append(item)
 
-    # Build one deterministic latest record per independent verifier. This prevents
-    # one verifier from inflating confidence by emitting many receipts.
     by_peer_verifier: Dict[str, Dict[str, CapabilityEvidence]] = {}
     for item in sorted(
         candidates,
@@ -327,6 +328,8 @@ def propose_collaboration(
     peer.validate()
     if capability not in peer.capabilities:
         raise ValueError(f"peer {peer.peer_id!r} does not claim capability {capability!r}")
+    if not peer.endpoint:
+        raise ValueError(f"peer {peer.peer_id!r} has no compatible execution endpoint")
 
     # Any actual cross-system invocation crosses the network authority boundary.
     # External metadata can never add or remove authority requirements.
@@ -374,8 +377,6 @@ def evaluate_upgrade(
             continue
         grouped.setdefault(result.verifier_id, set()).add(result)
 
-    # Exact replays collapse because VerifierResult is frozen/hashable. Conflicting
-    # multiple results from one verifier fail closed instead of cherry-picking.
     ambiguous = tuple(sorted(verifier_id for verifier_id, items in grouped.items() if len(items) > 1))
     if ambiguous:
         return _verdict(
