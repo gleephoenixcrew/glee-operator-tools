@@ -10,11 +10,11 @@ represented here. They require separate authority surfaces.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
 import json
 import socket
-import urllib.error
-import urllib.request
+import ssl
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Mapping, Optional, Tuple
@@ -97,7 +97,7 @@ class BoundedHttpClient:
     def __init__(self, grant: NetworkGrant, *, transport: Optional[Transport] = None):
         grant.validate()
         self.grant = grant
-        self._transport = transport or _urllib_transport
+        self._transport = transport or _pinned_https_transport
         self._uses = 0
 
     @property
@@ -142,6 +142,8 @@ class BoundedHttpClient:
             raise NetworkDenied("only HTTPS federation requests are allowed")
         if not parts.hostname:
             raise NetworkDenied("request URL must contain a hostname")
+        if parts.port not in (None, 443):
+            raise NetworkDenied("v0 federation network grants permit HTTPS port 443 only")
         if parts.username is not None or parts.password is not None:
             raise NetworkDenied("userinfo in request URLs is forbidden")
         if parts.fragment:
@@ -228,53 +230,84 @@ def build_a2a_readonly_query(
     )
 
 
-def _urllib_transport(request: OutboundRequest, timeout_seconds: int, max_response_bytes: int) -> HttpResult:
-    _reject_private_resolution(request.url)
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """TLS connection whose socket target is the already-verified DNS answer.
 
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802
-            return None
+    The HTTP Host header and TLS SNI/certificate validation still use `host`.
+    Pinning the socket target closes the DNS-check/second-resolution race that a
+    generic high-level HTTP client would otherwise introduce.
+    """
 
-    opener = urllib.request.build_opener(NoRedirect())
-    req = urllib.request.Request(
-        request.url,
-        data=request.body if request.method.upper() == "POST" else None,
-        headers={key: value for key, value in request.headers},
-        method=request.method.upper(),
-    )
-    try:
-        with opener.open(req, timeout=timeout_seconds) as response:
-            body = response.read(max_response_bytes + 1)
-            return HttpResult(
-                status=int(response.status),
-                headers={str(k): str(v) for k, v in response.headers.items()},
-                body=body,
-            )
-    except urllib.error.HTTPError as exc:
-        # Includes redirects because NoRedirect refuses to follow them.
-        body = exc.read(max_response_bytes + 1)
-        return HttpResult(status=int(exc.code), headers={str(k): str(v) for k, v in exc.headers.items()}, body=body)
-    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-        raise NetworkProtocolError(f"network transport failed: {exc}") from exc
+    def __init__(self, host: str, pinned_ip: str, *, port: int, timeout: int):
+        super().__init__(host, port=port, timeout=timeout, context=ssl.create_default_context())
+        self._pinned_ip = pinned_ip
+
+    def connect(self) -> None:
+        sock = socket.create_connection(
+            (self._pinned_ip, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 
-def _reject_private_resolution(url: str) -> None:
-    host = urlsplit(url).hostname
+def _pinned_https_transport(request: OutboundRequest, timeout_seconds: int, max_response_bytes: int) -> HttpResult:
+    parts = urlsplit(request.url)
+    host = parts.hostname
     if not host:
         raise NetworkDenied("request URL must contain a hostname")
+    port = parts.port or 443
+    if port != 443:
+        raise NetworkDenied("v0 federation network grants permit HTTPS port 443 only")
+
+    addresses = _resolve_global_addresses(host, port)
+    pinned_ip = addresses[0]
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+
+    connection = _PinnedHTTPSConnection(host, pinned_ip, port=port, timeout=timeout_seconds)
+    try:
+        connection.request(
+            request.method.upper(),
+            path,
+            body=request.body if request.method.upper() == "POST" else None,
+            headers={key: value for key, value in request.headers},
+        )
+        response = connection.getresponse()
+        body = response.read(max_response_bytes + 1)
+        return HttpResult(
+            status=int(response.status),
+            headers={str(k): str(v) for k, v in response.headers.items()},
+            body=body,
+        )
+    except (OSError, ssl.SSLError, socket.timeout, http.client.HTTPException) as exc:
+        raise NetworkProtocolError(f"network transport failed: {exc}") from exc
+    finally:
+        connection.close()
+
+
+def _resolve_global_addresses(host: str, port: int) -> Tuple[str, ...]:
     _reject_private_ip_literal(host)
     try:
-        infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise NetworkProtocolError(f"DNS resolution failed for {host}: {exc}") from exc
+
+    addresses = []
     for info in infos:
         address = info[4][0]
         try:
             ip = ipaddress.ip_address(address)
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise NetworkDenied(f"DNS returned an invalid IP address for {host}") from exc
         if not ip.is_global:
             raise NetworkDenied(f"resolved address for {host} is not globally routable")
+        addresses.append(str(ip))
+    unique = tuple(sorted(set(addresses)))
+    if not unique:
+        raise NetworkProtocolError(f"DNS resolution returned no addresses for {host}")
+    return unique
 
 
 def _reject_private_ip_literal(host: str) -> None:
