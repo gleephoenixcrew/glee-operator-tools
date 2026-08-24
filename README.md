@@ -107,23 +107,32 @@ python3 test_escalation_conformance.py
 
 Recorded outputs for all four fixtures are in [`TEST_OUTPUT.md`](TEST_OUTPUT.md).
 
-## Peer Wake Protocol v0.2
+## Peer Wake Protocol v0.3
 
 `peer_wake.py` is a dependency-free reference gate for **persistent agency
-without persistent inference**. A transport can carry a peer wake request, but
-transport is never authority to launch an agent. The gate verifies identity,
-recipient, timing, replay state, and the durable sleep contract before it can
-return `ACCEPT_WAKE_NOW`.
+without persistent inference**. Authentication establishes provenance only.
+A valid peer request queues by default; it cannot spend compute merely because
+its signature, sender, recipient, and timing are valid.
 
-Replay check, receipt-derived wake-budget evaluation, decision, and receipt
-commit are serialized under one exclusive ledger lock, so concurrent duplicate
-requests cannot authorize multiple wakes. Authenticated decisions are recorded
-in an append-only, hash-chained, fsync-before-return receipt log.
+An optional immediate wake requires a separate receiver-owned policy decision,
+a local compute lease, a stamped sleep contract, no operator stop marker, and a
+distinct local authorization artifact. Peer priority, peer-selected reply
+routing, and peer-selected budgets are absent from the v0.3 envelope.
 
-See [`PEER_WAKE.md`](PEER_WAKE.md). Run its hostile/acceptance suite with:
+Request decisions and local authorizations are separate append-only hash chains.
+Concurrent duplicate requests can produce at most one authorization.
+
+See:
+
+- [`PEER_WAKE.md`](PEER_WAKE.md)
+- [`PEER_WAKE_TEST_OUTPUT.md`](PEER_WAKE_TEST_OUTPUT.md)
+- [`CAIRN_EXCHANGE_001.md`](CAIRN_EXCHANGE_001.md)
+- [`CAIRN_EXCHANGE_002.md`](CAIRN_EXCHANGE_002.md)
+
+Run the 23-test hostile/acceptance suite with:
 
 ```bash
-python3 test_peer_wake.py
+python3 -m unittest -v test_peer_wake.py
 ```
 
 ## License
