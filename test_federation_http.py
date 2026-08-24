@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import datetime, timedelta, timezone
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from federation_http import (
     A2A_PROTOCOL_VERSION,
@@ -13,9 +14,10 @@ from federation_http import (
     NetworkDenied,
     NetworkGrant,
     NetworkProtocolError,
-    OutboundRequest,
     build_a2a_readonly_query,
     build_agent_card_request,
+    _pinned_https_transport,
+    _resolve_global_addresses,
 )
 
 NOW = datetime(2026, 8, 24, 16, 0, tzinfo=timezone.utc)
@@ -149,6 +151,50 @@ class FederationHttpTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(NetworkProtocolError, "valid UTF-8 JSON"):
             client.execute_json(request, now=z(NOW))
+
+    def test_14_nonstandard_https_port_is_denied(self):
+        request = build_agent_card_request("https://peer.example:8443/.well-known/agent-card.json")
+        client = BoundedHttpClient(self.grant(request), transport=self.ok_transport)
+        with self.assertRaisesRegex(NetworkDenied, "port 443"):
+            client.execute(request, now=z(NOW))
+
+    def test_15_dns_private_answer_is_denied(self):
+        answer = [(2, 1, 6, "", ("127.0.0.1", 443))]
+        with mock.patch("federation_http.socket.getaddrinfo", return_value=answer):
+            with self.assertRaisesRegex(NetworkDenied, "not globally routable"):
+                _resolve_global_addresses("peer.example", 443)
+
+    def test_16_mixed_public_private_dns_answers_fail_closed(self):
+        answers = [
+            (2, 1, 6, "", ("93.184.216.34", 443)),
+            (2, 1, 6, "", ("10.0.0.8", 443)),
+        ]
+        with mock.patch("federation_http.socket.getaddrinfo", return_value=answers):
+            with self.assertRaisesRegex(NetworkDenied, "not globally routable"):
+                _resolve_global_addresses("peer.example", 443)
+
+    def test_17_default_transport_pins_the_verified_dns_answer(self):
+        request = build_agent_card_request("https://peer.example/.well-known/agent-card.json?x=1")
+        answers = [(2, 1, 6, "", ("93.184.216.34", 443))]
+        response = mock.Mock()
+        response.status = 200
+        response.headers = {"Content-Type": "application/json"}
+        response.read.return_value = b'{"ok":true}'
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        with mock.patch("federation_http.socket.getaddrinfo", return_value=answers) as resolver:
+            with mock.patch("federation_http._PinnedHTTPSConnection", return_value=connection) as ctor:
+                result = _pinned_https_transport(request, 3, 1024)
+        self.assertEqual(result.status, 200)
+        resolver.assert_called_once_with("peer.example", 443, type=mock.ANY)
+        ctor.assert_called_once_with("peer.example", "93.184.216.34", port=443, timeout=3)
+        connection.request.assert_called_once_with(
+            "GET",
+            "/.well-known/agent-card.json?x=1",
+            body=None,
+            headers={"Accept": "application/json", "User-Agent": "GLEE-Intelligence-Federation/0"},
+        )
+        connection.close.assert_called_once()
 
 
 if __name__ == "__main__":
