@@ -154,6 +154,50 @@ class PeerWakeV03Tests(unittest.TestCase):
         self.assertTrue(self.requests.verify_chain()[0])
         self.assertFalse(self.auth_path.exists())
 
+    def test_queued_request_preserves_complete_signed_envelope(self):
+        envelope = self.envelope()
+        result = self.decide(envelope)
+        self.assertEqual(result.decision, WakeDecision.QUEUE_REQUEST)
+        row = list(self.requests.records())[0]
+        self.assertEqual(row["queue_state"], "PENDING")
+        self.assertEqual(row["envelope"], asdict(envelope))
+        restored = WakeEnvelope.from_mapping(row["envelope"])
+        self.assertEqual(restored.task, "Adjudicate the public record")
+        self.assertEqual(restored.reason, "Cairn has published new evidence")
+        self.assertEqual(restored.envelope_hash(), row["envelope_hash"])
+
+    def test_peer_cannot_choose_unbounded_envelope_lifetime(self):
+        envelope = self.envelope(
+            envelope_id="long-lived",
+            nonce="long-lived",
+            issued_at=z(NOW - timedelta(seconds=1)),
+            expires_at=z(NOW + timedelta(seconds=600)),
+        )
+        result = evaluate_wake(
+            envelope,
+            policy=self.policy,
+            keyring=self.keyring,
+            request_receipts=self.requests,
+            now=NOW,
+        )
+        self.assertEqual(
+            result.decision, WakeDecision.DECLINED_EXCESSIVE_LIFETIME
+        )
+
+        local_override = LocalWakePolicy(
+            recipient="glee",
+            authorized_senders=("cairn",),
+            max_envelope_lifetime_seconds=601,
+        )
+        accepted = evaluate_wake(
+            envelope,
+            policy=local_override,
+            keyring=self.keyring,
+            request_receipts=self.requests,
+            now=NOW,
+        )
+        self.assertEqual(accepted.decision, WakeDecision.QUEUE_REQUEST)
+
     def test_perfect_envelope_can_be_declined_by_local_policy(self):
         policy = LocalWakePolicy(
             recipient="glee",
