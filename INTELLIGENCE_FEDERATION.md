@@ -14,7 +14,7 @@ The loop is designed to compound capability while preserving local sovereignty, 
 
 v0 normalizes four protocol families into the same untrusted `PeerDescriptor` contract:
 
-- A2A 1.0 Agent Cards for agent identity, interfaces, and skills.
+- A2A 1.0 Agent Cards for agent identity, interfaces, and skills. The v0 executor selects only advertised `JSONRPC` interfaces in the A2A 1.x line and sends `A2A-Version: 1.0` on discovery and message requests.
 - MCP 2026-07-28 server/tool metadata for tool and data capabilities.
 - ANP 1.1 descriptors for decentralized agent identity/discovery.
 - GLEE Peer Wake v0.3 for sovereign asynchronous peer requests.
@@ -45,6 +45,7 @@ Discovery systems such as NANDA Index/NEST, DNS-AID/Agent Name Service, and publ
 The kernel provides:
 
 - structural normalization of A2A, MCP, ANP, and Peer Wake metadata;
+- A2A transport compatibility selection instead of trusting the first advertised interface;
 - fresh evidence ranking by independent verifier, not receipt count;
 - replay/artifact de-duplication;
 - bounded collaboration proposals;
@@ -78,7 +79,7 @@ Additional network invariants:
 - the grant is consumed before I/O, so an ambiguous timeout cannot silently make a single-use request reusable;
 - response size and JSON structure are bounded/validated.
 
-`build_agent_card_request` creates a public Agent Card GET. `build_a2a_readonly_query` creates an A2A 1.0 JSON-RPC `SendMessage` request. The remote `glee_authority` metadata is advisory only; the local exact-request grant is the actual enforcement boundary.
+`build_agent_card_request` creates a versioned public Agent Card GET. `build_a2a_readonly_query` creates an A2A 1.0 JSON-RPC `SendMessage` request. The remote `glee_authority` metadata is advisory only; the local exact-request grant is the actual enforcement boundary.
 
 Credentials, spending, publication, and workspace mutation do not exist in `NetworkGrant`. If a later collaboration needs one of those capabilities, it must cross a different authority surface.
 
@@ -123,10 +124,12 @@ python3 -m py_compile intelligence_federation.py federation_http.py test_intelli
 python3 -m unittest -v test_intelligence_federation.py test_federation_http.py
 ```
 
-The combined suite contains 42 tests covering hostile prompt-like descriptor fields, self-attestation, stale/replayed evidence, receipt-count inflation, shared verifier artifacts, deterministic ranking, authority escalation, rollback, verifier independence, benchmark reproduction, invariant regression, recursion budgets, exact-request grants, single-use failure semantics, credential-header rejection, response ceilings, SSRF/private-address defenses, and pinned DNS-to-TLS transport.
+The combined suite contains 44 tests covering hostile prompt-like descriptor fields, self-attestation, stale/replayed evidence, receipt-count inflation, shared verifier artifacts, deterministic ranking, authority escalation, rollback, verifier independence, benchmark reproduction, invariant regression, recursion budgets, A2A JSON-RPC 1.x interface selection/version signaling, exact-request grants, single-use failure semantics, credential-header rejection, response ceilings, SSRF/private-address defenses, and pinned DNS-to-TLS transport.
 
-`.github/workflows/federation-tests.yml` runs the same compile and unittest gate on the branch/PR using read-only repository permissions.
+`.github/workflows/federation-tests.yml` runs the same compile and unittest gate on the branch/PR using read-only repository permissions. GitHub Actions run `32748494015`, job `97499593786`, passed the PR merge commit with 44/44 tests green.
 
 ## Current activation boundary
 
-A real external Agent Card can already be discovered and normalized. Actual outbound A2A/MCP POST execution must occur on an approved GLEE/Sunny runtime where the local authority plane can issue the exact one-shot `NetworkGrant`. The federation code must not gain generic unrestricted egress merely to make integration convenient.
+A real external A2A Agent Card can already be discovered and normalized. The first confirmed compatible peer is the AAT Agent Society Orchestrator, which advertises `JSONRPC` protocol `1.0` at `https://ai.newhgg.com/a2a` and public agent-market/society discovery capabilities.
+
+Actual outbound A2A/MCP POST execution must occur on an approved GLEE/Sunny runtime where the local authority plane can issue the exact one-shot `NetworkGrant`. The federation code must not gain generic unrestricted egress merely to make integration convenient.
