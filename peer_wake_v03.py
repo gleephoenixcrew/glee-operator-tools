@@ -79,6 +79,7 @@ class WakeDecision(str, Enum):
     DECLINED_BAD_SIGNATURE = "DECLINED_BAD_SIGNATURE"
     DECLINED_EXPIRED = "DECLINED_EXPIRED"
     DECLINED_FUTURE_ISSUE = "DECLINED_FUTURE_ISSUE"
+    DECLINED_EXCESSIVE_LIFETIME = "DECLINED_EXCESSIVE_LIFETIME"
     DECLINED_WRONG_RECIPIENT = "DECLINED_WRONG_RECIPIENT"
     DECLINED_REPLAY = "DECLINED_REPLAY"
     DECLINED_SLEEP_POLICY = "DECLINED_SLEEP_POLICY"
@@ -247,6 +248,7 @@ class SleepContract:
 class LocalWakePolicy:
     recipient: str
     max_future_skew_seconds: int = 120
+    max_envelope_lifetime_seconds: int = 600
     authorized_senders: Tuple[str, ...] = ()
     accept_peer_requests: bool = True
     immediate_wake_enabled: bool = False
@@ -264,6 +266,12 @@ class LocalWakePolicy:
             or self.max_future_skew_seconds < 0
         ):
             raise ValueError("max_future_skew_seconds must be a non-negative integer")
+        if (
+            isinstance(self.max_envelope_lifetime_seconds, bool)
+            or not isinstance(self.max_envelope_lifetime_seconds, int)
+            or self.max_envelope_lifetime_seconds <= 0
+        ):
+            raise ValueError("max_envelope_lifetime_seconds must be a positive integer")
         if (
             isinstance(self.authorization_ttl_seconds, bool)
             or not isinstance(self.authorization_ttl_seconds, int)
@@ -509,6 +517,11 @@ def evaluate_wake(
         return result(WakeDecision.DECLINED_MALFORMED, f"invalid timestamp: {exc}")
     if expires_at <= issued_at:
         return result(WakeDecision.DECLINED_MALFORMED, "expires_at must be after issued_at")
+    if (expires_at - issued_at).total_seconds() > policy.max_envelope_lifetime_seconds:
+        return result(
+            WakeDecision.DECLINED_EXCESSIVE_LIFETIME,
+            "envelope lifetime exceeds receiver policy",
+        )
     if (issued_at - observed).total_seconds() > policy.max_future_skew_seconds:
         return result(WakeDecision.DECLINED_FUTURE_ISSUE, "issued_at is too far in the future")
     if observed >= expires_at:
@@ -643,6 +656,8 @@ def evaluate_and_record(
             "observed_at": iso_z(observed),
             "envelope_id": envelope.envelope_id,
             "envelope_hash": envelope.envelope_hash(),
+            "envelope": asdict(envelope),
+            "queue_state": "PENDING" if result.should_queue else "",
             "sender": envelope.sender,
             "recipient": envelope.recipient,
             "nonce": envelope.nonce,
@@ -743,6 +758,7 @@ def _cmd_decide(args: argparse.Namespace) -> int:
     policy = LocalWakePolicy(
         recipient=args.recipient,
         max_future_skew_seconds=args.max_future_skew_seconds,
+        max_envelope_lifetime_seconds=args.max_envelope_lifetime_seconds,
         authorized_senders=tuple(args.authorized_sender or ()),
         accept_peer_requests=not args.decline_peer_requests,
         immediate_wake_enabled=args.immediate_wake,
@@ -813,6 +829,7 @@ def build_parser() -> argparse.ArgumentParser:
     decide.add_argument("--sleep-contract")
     decide.add_argument("--authorized-sender", action="append")
     decide.add_argument("--max-future-skew-seconds", type=int, default=120)
+    decide.add_argument("--max-envelope-lifetime-seconds", type=int, default=600)
     decide.add_argument("--decline-peer-requests", action="store_true")
     decide.add_argument("--immediate-wake", action="store_true")
     decide.add_argument("--lease-wall-seconds", type=int)
