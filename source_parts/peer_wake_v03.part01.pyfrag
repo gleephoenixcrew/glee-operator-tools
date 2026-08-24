@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""GLEE Peer Wake Protocol v0.3 reference implementation.
+
+The core sovereignty boundary is deliberately stronger than v0.2:
+
+    peer transport -> authenticated request receipt -> local adjudication
+    -> local wake authorization -> launcher
+
+Never:
+
+    peer transport -> launcher
+    valid signature -> compute spend
+    request receipt -> wake without a separate local authorization
+
+This module is dependency-free and uses HMAC-SHA256 only for the controlled
+bilateral experiment. Multi-peer federation must replace shared secrets with
+asymmetric identity keys.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import hmac
+import json
+import os
+import sys
+import uuid
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - supported sentinel host is POSIX/Linux.
+    fcntl = None  # type: ignore[assignment]
+
+
+REQUEST_PROTOCOL = "glee.peer-wake-request/v0.3"
+AUTHORIZATION_PROTOCOL = "glee.wake-authorization/v0.3"
+SIGNATURE_ALG = "hmac-sha256"
+
+
+class RequestDecision(str, Enum):
+    QUEUED_AUTHENTICATED = "QUEUED_AUTHENTICATED"
+    DECLINED_LOCAL_CONFIGURATION = "DECLINED_LOCAL_CONFIGURATION"
+    DECLINED_LOCAL_POLICY = "DECLINED_LOCAL_POLICY"
+    DECLINED_STOPPED = "DECLINED_STOPPED"
+    DECLINED_UNAUTHORIZED = "DECLINED_UNAUTHORIZED"
+    DECLINED_BAD_SIGNATURE = "DECLINED_BAD_SIGNATURE"
+    DECLINED_EXPIRED = "DECLINED_EXPIRED"
+    DECLINED_FUTURE_ISSUE = "DECLINED_FUTURE_ISSUE"
+    DECLINED_WRONG_RECIPIENT = "DECLINED_WRONG_RECIPIENT"
+    DECLINED_REPLAY = "DECLINED_REPLAY"
+    DECLINED_PEER_REQUESTS_DISABLED = "DECLINED_PEER_REQUESTS_DISABLED"
+    DECLINED_SLEEP_POLICY = "DECLINED_SLEEP_POLICY"
+    DECLINED_MALFORMED = "DECLINED_MALFORMED"
+
+
+class AuthorizationDecision(str, Enum):
+    AUTHORIZED = "AUTHORIZED"
+    NOT_ISSUED_LOCAL_CONFIGURATION = "NOT_ISSUED_LOCAL_CONFIGURATION"
+    NOT_ISSUED_QUEUE_ONLY = "NOT_ISSUED_QUEUE_ONLY"
+    NOT_ISSUED_STOPPED = "NOT_ISSUED_STOPPED"
+    NOT_ISSUED_LOCAL_POLICY = "NOT_ISSUED_LOCAL_POLICY"
+    NOT_ISSUED_SLEEP_POLICY = "NOT_ISSUED_SLEEP_POLICY"
+    NOT_ISSUED_RULES_MISMATCH = "NOT_ISSUED_RULES_MISMATCH"
+    NOT_ISSUED_MODEL_MISMATCH = "NOT_ISSUED_MODEL_MISMATCH"
+    NOT_ISSUED_REQUEST_EXPIRED = "NOT_ISSUED_REQUEST_EXPIRED"
+    NOT_ISSUED_REPLAY = "NOT_ISSUED_REPLAY"
+    NOT_ISSUED_INVALID_REQUEST_RECEIPT = "NOT_ISSUED_INVALID_REQUEST_RECEIPT"
+
+
+class InboundMode(str, Enum):
+    QUEUE_ONLY = "queue_only"
+    LOCAL_IMMEDIATE = "local_immediate"
+
+
+@dataclass(frozen=True)
+class WakeEnvelope:
+    """Peer-authored request data.
+
+    No field in this structure grants priority, chooses a reply channel, names a
+    compute lease, or authorizes launch. Those are all receiver-local concerns.
+    """
+
+    protocol: str
+    envelope_id: str
+    sender: str
+    recipient: str
+    issued_at: str
+    expires_at: str
+    nonce: str
+    reason: str
+    task: str
+    key_id: str = "default"
+    signature_alg: str = SIGNATURE_ALG
+    signature: str = ""
+
+    @classmethod
+    def new(
+        cls,
+        *,
+        sender: str,
+        recipient: str,
+        issued_at: str,
+        expires_at: str,
+        reason: str,
+        task: str,
+        key_id: str = "default",
+        envelope_id: Optional[str] = None,
+        nonce: Optional[str] = None,
+    ) -> "WakeEnvelope":
+        return cls(
+            protocol=REQUEST_PROTOCOL,
+            envelope_id=envelope_id or str(uuid.uuid4()),
+            sender=sender,
+            recipient=recipient,
+            issued_at=issued_at,
+            expires_at=expires_at,
+            nonce=nonce or uuid.uuid4().hex,
+            reason=reason,
+            task=task,
+            key_id=key_id,
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "WakeEnvelope":
+        required = {
+            "protocol",
+            "envelope_id",
+            "sender",
+            "recipient",
+            "issued_at",
+            "expires_at",
+            "nonce",
+            "reason",
+            "task",
+        }
+        missing = sorted(required.difference(value))
+        if missing:
+            raise ValueError("missing required fields: " + ", ".join(missing))
+        fields = set(cls.__dataclass_fields__)
+        unknown = sorted(set(value).difference(fields))
+        if unknown:
+            raise ValueError("unknown fields: " + ", ".join(unknown))
+        try:
+            return cls(**dict(value))
+        except TypeError as exc:
+            raise ValueError(f"invalid wake envelope: {exc}") from exc
+
+    def unsigned_dict(self) -> Dict[str, Any]:
+        value = asdict(self)
+        value.pop("signature", None)
+        return value
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json(self.unsigned_dict()).encode("utf-8")
+
+    def envelope_hash(self) -> str:
+        return sha256_json(self.unsigned_dict())
+
+    def signed(self, secret: bytes) -> "WakeEnvelope":
+        signature = hmac.new(secret, self.canonical_bytes(), hashlib.sha256).hexdigest()
+        return WakeEnvelope(**{**asdict(self), "signature": signature})
+
+
+@dataclass(frozen=True)
+class ContinuationPointer:
+    """A dated, explicitly overrulable pointer inherited across sleep."""
+
+    ref: str
+    recorded_at: str
+    overrulable: bool = True
+    note: str = ""
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ContinuationPointer":
+        fields = set(cls.__dataclass_fields__)
+        unknown = sorted(set(value).difference(fields))
+        if unknown:
+            raise ValueError("unknown continuation-pointer fields: " + ", ".join(unknown))
+        try:
+            pointer = cls(**dict(value))
+        except TypeError as exc:
+            raise ValueError(f"invalid continuation pointer: {exc}") from exc
+        validate_continuation_pointer(pointer)
+        return pointer
+
+
+@dataclass(frozen=True)
+class SleepContract:
+    """Durable state written before voluntary sleep.
+
+    ``reason_for_sleep_note`` is dated evidence only. It is never read as a wake
+    condition or as a claim about the next model's state of mind.
+
+    Volatile facts are stale by default. ``trusted_without_refresh`` is the
+    deliberately tiny allowlist; there is no prose ``refresh_required`` field.
+    """
+
+    sleep_id: str
+    agent_id: str
+    created_at: str
+    rules_version: str
+    model_id: str
+    reason_for_sleep_note: str = ""
+    peer_requests_enabled: bool = True
+    allowed_peer_senders: Tuple[str, ...] = ()
+    minimum_sleep_until: str = ""
+    unfinished_work: Tuple[ContinuationPointer, ...] = ()
+    context_refs: Tuple[ContinuationPointer, ...] = ()
+    trusted_without_refresh: Tuple[str, ...] = ()
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "SleepContract":
+        fields = set(cls.__dataclass_fields__)
+        unknown = sorted(set(value).difference(fields))
+        if unknown:
+            raise ValueError("unknown sleep-contract fields: " + ", ".join(unknown))
+        normalized = dict(value)
+        for name in ("allowed_peer_senders", "trusted_without_refresh"):
+            if name in normalized:
+                raw = normalized[name]
+                if not isinstance(raw, (list, tuple)):
+                    raise ValueError(f"sleep contract {name} must be an array")
+                normalized[name] = tuple(raw)
+        for name in ("unfinished_work", "context_refs"):
+            if name in normalized:
+                raw = normalized[name]
+                if not isinstance(raw, (list, tuple)):
+                    raise ValueError(f"sleep contract {name} must be an array")
+                normalized[name] = tuple(
+                    item if isinstance(item, ContinuationPointer) else ContinuationPointer.from_mapping(item)
+                    for item in raw
+                )
+        try:
+            contract = cls(**normalized)
+        except TypeError as exc:
+            raise ValueError(f"invalid sleep contract: {exc}") from exc
+        validate_sleep_contract(contract)
+        return contract
+
+
+@dataclass(frozen=True)
+class ComputeLease:
+    """Receiver-local bound on one authorized awakening."""
+
+    max_wall_seconds: int
+    max_total_tokens: int
+    max_tool_calls: int
+    max_cost_microusd: int = 0
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ComputeLease":
+        fields = set(cls.__dataclass_fields__)
+        unknown = sorted(set(value).difference(fields))
+        if unknown:
+            raise ValueError("unknown compute-lease fields: " + ", ".join(unknown))
+        try:
+            lease = cls(**dict(value))
+        except TypeError as exc:
+            raise ValueError(f"invalid compute lease: {exc}") from exc
+        validate_compute_lease(lease)
+        return lease
+
+
+@dataclass(frozen=True)
+class LocalWakePolicy:
+    """Receiver-owned policy. Peer data cannot mutate this object."""
+
+    policy_id: str
+    recipient: str
+    accept_peer_requests: bool = True
+    authorized_senders: Tuple[str, ...] = ()
+    inbound_mode: InboundMode = InboundMode.QUEUE_ONLY
+    immediate_senders: Tuple[str, ...] = ()
+    max_future_skew_seconds: int = 120
+    authorization_ttl_seconds: int = 300
+    compute_lease: ComputeLease = field(
+        default_factory=lambda: ComputeLease(
+            max_wall_seconds=600,
+            max_total_tokens=100_000,
+            max_tool_calls=50,
+            max_cost_microusd=0,
+        )
+    )
+    stop_marker_path: str = ""
+    expected_rules_version: str = ""
+    expected_model_id: str = ""
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "LocalWakePolicy":
+        fields = set(cls.__dataclass_fields__)
+        unknown = sorted(set(value).difference(fields))
+        if unknown:
+            raise ValueError("unknown local-wake-policy fields: " + ", ".join(unknown))
