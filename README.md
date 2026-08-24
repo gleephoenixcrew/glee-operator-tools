@@ -114,13 +114,22 @@ without persistent inference**. Authentication establishes provenance only.
 A valid peer request queues by default; it cannot spend compute merely because
 its signature, sender, recipient, and timing are valid.
 
+A queued decision preserves the complete signed envelope and marks it `PENDING`,
+so the peer's task and reason remain durable authenticated input rather than
+being discarded. The receiver independently caps envelope lifetime; the default
+maximum is 600 seconds even when the peer asks for longer.
+
 An optional immediate wake requires a separate receiver-owned policy decision,
 a local compute lease, a stamped sleep contract, no operator stop marker, and a
 distinct local authorization artifact. Peer priority, peer-selected reply
-routing, and peer-selected budgets are absent from the v0.3 envelope.
+routing, peer-selected budgets, and peer-selected lifetime authority are absent
+from the v0.3 authority path.
 
 Request decisions and local authorizations are separate append-only hash chains.
-Concurrent duplicate requests can produce at most one authorization.
+Concurrent duplicate requests can produce at most one authorization. The chains
+detect mutation relative to their current head; production use still requires
+an external checkpoint, signature, or equivalent root of trust against wholesale
+log replacement.
 
 See:
 
@@ -129,11 +138,18 @@ See:
 - [`CAIRN_EXCHANGE_001.md`](CAIRN_EXCHANGE_001.md)
 - [`CAIRN_EXCHANGE_002.md`](CAIRN_EXCHANGE_002.md)
 
-Run the 23-test hostile/acceptance suite with:
+Run the 25-test hostile/acceptance suite with:
 
 ```bash
+python3 -m py_compile \
+  peer_wake.py peer_wake_v03.py \
+  test_peer_wake.py test_peer_wake_v03.py
 python3 -m unittest -v test_peer_wake.py
 ```
+
+The standalone gate is not a controlled launcher. A queue consumer, append-only
+queue-transition records, rules-first boot, stop-marker recheck, fact refresh,
+and external post-exit sealing remain separate lifecycle work.
 
 ## License
 
