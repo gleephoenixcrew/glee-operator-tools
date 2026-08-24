@@ -40,7 +40,7 @@ class IntelligenceFederationTests(unittest.TestCase):
 
     def evidence(self, *, evidence_id="e1", peer_id="math-agent", verifier_id="judge-1",
                  capability="prove", quality=0.8, passed=True,
-                 observed_at=None, expires_at=None):
+                 observed_at=None, expires_at=None, artifact_ref=None):
         return CapabilityEvidence(
             evidence_id=evidence_id,
             peer_id=peer_id,
@@ -50,17 +50,17 @@ class IntelligenceFederationTests(unittest.TestCase):
             expires_at=expires_at or z(NOW + timedelta(minutes=10)),
             passed=passed,
             quality=quality,
-            artifact_ref=f"receipt://{evidence_id}",
+            artifact_ref=artifact_ref or f"receipt://{evidence_id}",
         )
 
-    def result(self, verifier_id, *, passed=True, score=0.9, failures=()):
+    def result(self, verifier_id, *, passed=True, score=0.9, failures=(), artifact_ref=None):
         return VerifierResult(
             verifier_id=verifier_id,
             candidate_id="u1",
             passed=passed,
             benchmark_score=score,
             invariant_failures=tuple(failures),
-            artifact_ref=f"receipt://{verifier_id}",
+            artifact_ref=artifact_ref or f"receipt://{verifier_id}",
         )
 
     def test_01_a2a_prompt_like_fields_are_inert(self):
@@ -121,8 +121,10 @@ class IntelligenceFederationTests(unittest.TestCase):
         self.assertEqual(ranked[0].score, 0.0)
 
     def test_08_replayed_evidence_id_counts_once(self):
-        one = self.evidence(evidence_id="same", verifier_id="judge-1", quality=0.4)
-        replay = self.evidence(evidence_id="same", verifier_id="judge-2", quality=1.0)
+        one = self.evidence(evidence_id="same", verifier_id="judge-1", quality=0.4,
+                            artifact_ref="receipt://one")
+        replay = self.evidence(evidence_id="same", verifier_id="judge-2", quality=1.0,
+                               artifact_ref="receipt://two")
         ranked = rank_peers((self.a2a(),), "prove", (one, replay), now=z(NOW))
         self.assertEqual(ranked[0].independent_evidence_count, 1)
         self.assertEqual(ranked[0].score, 0.4)
@@ -203,6 +205,55 @@ class IntelligenceFederationTests(unittest.TestCase):
     def test_20_verified_cycle_requests_measurement_then_discovery(self):
         signal = next_cycle_signal(3, improvement_verified=True, max_cycle_depth=8)
         self.assertEqual((signal.cycle_number, signal.next_action), (4, "MEASURE_AND_DISCOVER"))
+
+    def test_21_one_verifier_cannot_inflate_count_with_many_receipts(self):
+        older = self.evidence(evidence_id="e-old", verifier_id="judge-1", quality=0.2,
+                              observed_at=z(NOW - timedelta(minutes=3)))
+        newer = self.evidence(evidence_id="e-new", verifier_id="judge-1", quality=0.9,
+                              observed_at=z(NOW - timedelta(minutes=1)))
+        ranked = rank_peers((self.a2a(),), "prove", (newer, older), now=z(NOW))
+        self.assertEqual(ranked[0].independent_evidence_count, 1)
+        self.assertEqual(ranked[0].score, 0.9)
+
+    def test_22_distinct_verifiers_with_distinct_artifacts_count_independently(self):
+        evidence = (
+            self.evidence(evidence_id="e1", verifier_id="judge-1", quality=0.6),
+            self.evidence(evidence_id="e2", verifier_id="judge-2", quality=1.0),
+        )
+        ranked = rank_peers((self.a2a(),), "prove", evidence, now=z(NOW))
+        self.assertEqual(ranked[0].independent_evidence_count, 2)
+        self.assertEqual(ranked[0].score, 0.8)
+
+    def test_23_shared_artifact_cannot_fake_two_independent_verifiers(self):
+        candidate = UpgradeCandidate("u1", "peer-x", "optimizer", 0.5, 0.9, "git://before")
+        verdict = evaluate_upgrade(
+            candidate,
+            (
+                self.result("j1", artifact_ref="receipt://shared"),
+                self.result("j2", artifact_ref="receipt://shared"),
+            ),
+        )
+        self.assertEqual(verdict.decision, UpgradeDecision.REJECTED)
+        self.assertIn("same artifact", verdict.reason)
+
+    def test_24_exact_verifier_result_replay_collapses(self):
+        candidate = UpgradeCandidate("u1", "peer-x", "optimizer", 0.5, 0.9, "git://before")
+        j1 = self.result("j1")
+        verdict = evaluate_upgrade(candidate, (j1, j1, self.result("j2")))
+        self.assertEqual(verdict.decision, UpgradeDecision.VERIFIED_ADOPTABLE)
+
+    def test_25_conflicting_duplicate_verifier_results_fail_closed(self):
+        candidate = UpgradeCandidate("u1", "peer-x", "optimizer", 0.5, 0.9, "git://before")
+        verdict = evaluate_upgrade(
+            candidate,
+            (
+                self.result("j1", passed=True, artifact_ref="receipt://j1-a"),
+                self.result("j1", passed=False, artifact_ref="receipt://j1-b"),
+                self.result("j2"),
+            ),
+        )
+        self.assertEqual(verdict.decision, UpgradeDecision.REJECTED)
+        self.assertIn("ambiguous duplicate verifier", verdict.reason)
 
 
 if __name__ == "__main__":
