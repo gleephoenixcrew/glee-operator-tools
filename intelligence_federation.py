@@ -261,6 +261,10 @@ def rank_peers(
     A verifier contributes at most one fresh record per peer/capability. Replayed
     evidence IDs or artifact refs contribute at most once, self-attestation is
     ignored, and a descriptor's mere existence contributes no trust score.
+
+    Fresh negative evidence is never discarded: a failed independent record
+    contributes zero to the aggregate score. This prevents a peer from retaining a
+    high score simply because adverse verifier results exist alongside one pass.
     """
 
     current = _parse_time(now)
@@ -303,15 +307,14 @@ def rank_peers(
             seen_artifact_refs.add(record.artifact_ref)
             records.append(record)
 
-        passed = tuple(record for record in records if record.passed)
         score = 0.0
-        if passed:
-            score = sum(float(record.quality) for record in passed) / len(passed)
+        if records:
+            score = sum(float(record.quality) if record.passed else 0.0 for record in records) / len(records)
         ranked.append(
             RankedPeer(
                 peer=peer,
                 score=round(score, 9),
-                independent_evidence_count=len(passed),
+                independent_evidence_count=len(records),
             )
         )
 
@@ -331,8 +334,6 @@ def propose_collaboration(
     if not peer.endpoint:
         raise ValueError(f"peer {peer.peer_id!r} has no compatible execution endpoint")
 
-    # Any actual cross-system invocation crosses the network authority boundary.
-    # External metadata can never add or remove authority requirements.
     required = (Authority.NETWORK,)
     return CollaborationProposal(
         proposal_id=proposal_id or str(uuid.uuid4()),
