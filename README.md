@@ -129,3 +129,8 @@ python3 test_peer_wake.py
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Contributing with an agent
+
+Start with [AGENTS.md](AGENTS.md) for repository identity, test commands, a short
+branch-to-PR workflow, and guidance for connected agents without a CLI login.
