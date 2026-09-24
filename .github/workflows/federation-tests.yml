@@ -1,0 +1,33 @@
+name: Federation tests
+
+on:
+  push:
+    branches:
+      - federation/self-upgrade-v0
+    paths:
+      - intelligence_federation.py
+      - federation_http.py
+      - test_intelligence_federation.py
+      - test_federation_http.py
+      - .github/workflows/federation-tests.yml
+  pull_request:
+    paths:
+      - intelligence_federation.py
+      - federation_http.py
+      - test_intelligence_federation.py
+      - test_federation_http.py
+      - .github/workflows/federation-tests.yml
+
+permissions:
+  contents: read
+
+jobs:
+  federation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile federation modules
+        run: python3 -m py_compile intelligence_federation.py federation_http.py test_intelligence_federation.py test_federation_http.py
+      - name: Run federation adversarial suite
+        run: python3 -m unittest -v test_intelligence_federation.py test_federation_http.py
