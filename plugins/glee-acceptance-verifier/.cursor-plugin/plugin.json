@@ -1,0 +1,18 @@
+{
+  "name": "glee-acceptance-verifier",
+  "displayName": "GLEE Acceptance Verifier",
+  "version": "0.1.1",
+  "description": "Inspect GLEE's static patch-acceptance contract and try free fixed examples. Paid customer-patch checks require your authorized x402 V2 client.",
+  "author": {
+    "name": "GLEE"
+  },
+  "homepage": "https://platform.gleephoenix.com/agents/services.json?service=patch_verification&ref=cursor_patch_20261018",
+  "keywords": [
+    "patch",
+    "acceptance",
+    "verification",
+    "x402"
+  ],
+  "logo": "assets/logo.svg",
+  "license": "MIT"
+}

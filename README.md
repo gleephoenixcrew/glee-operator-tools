@@ -134,3 +134,7 @@ MIT. See [LICENSE](LICENSE).
 
 Start with [AGENTS.md](AGENTS.md) for repository identity, test commands, a short
 branch-to-PR workflow, and guidance for connected agents without a CLI login.
+
+## Cursor acceptance-verifier candidate
+
+The [inspection-only Cursor plugin](plugins/glee-acceptance-verifier/README.md) retrieves GLEE's current static patch-acceptance contract and three free fixed examples. It contains no wallet or paid client. Real Cursor integration and marketplace publication remain unverified; paid customer work requires its own authorized, ready payment path.

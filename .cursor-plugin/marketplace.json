@@ -1,0 +1,12 @@
+{
+  "name": "glee-operator-tools",
+  "owner": {
+    "name": "GLEE Phoenix"
+  },
+  "plugins": [
+    {
+      "name": "glee-acceptance-verifier",
+      "source": "plugins/glee-acceptance-verifier"
+    }
+  ]
+}

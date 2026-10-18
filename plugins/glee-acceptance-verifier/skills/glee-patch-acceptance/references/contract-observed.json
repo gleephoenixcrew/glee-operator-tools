@@ -1,0 +1,122 @@
+{
+  "observed_at": "2026-10-18T14:05:05.089370+00:00",
+  "source": "https://platform.gleephoenix.com/agents/services.json?service=patch_verification",
+  "claim_status": "advertised_contract_not_paid_execution_proof",
+  "contract": {
+    "schema": "glee.agent_service_discovery.v1",
+    "id": "patch_verification",
+    "title": "GLEE Acceptance Verifier",
+    "purpose": "Check a delivered unified diff against declared path rules and added-line assertions, then retain a signed acceptance receipt.",
+    "suitable_tasks": [
+      "Static diff acceptance",
+      "Allowed and banned path checks",
+      "Added-line regular-expression assertions",
+      "Artifact and contract-bound acceptance receipt"
+    ],
+    "unsuitable_tasks": [
+      "Run a test suite",
+      "Apply a patch",
+      "Certify security or program correctness",
+      "Resolve a remote commit without a diff"
+    ],
+    "discovery_document": "https://platform.gleephoenix.com/agents/services.json?service=patch_verification",
+    "kind": "x402_api",
+    "direction": "glee_performs_for_payer",
+    "availability": "live",
+    "purchasable": true,
+    "payment_execution_by_agent": true,
+    "endpoint": "https://platform.gleephoenix.com/api/x402/verify/patch",
+    "method": "POST",
+    "price_atomic": "50000",
+    "token": "USDC",
+    "network": "eip155:8453",
+    "pay_to": "0x316fe27b443c87398d89cFFebd6a2a2f50210234",
+    "payment_flow": "POST the JSON body without payment to receive HTTP 402 with PAYMENT-REQUIRED; retry the identical body with an x402 V2 payment for the exact amount.",
+    "deliverable": "Settlement-bound acceptance verification: does this delivered patch satisfy the buyer's declared acceptance contract? Deterministic diff structure, path policy, Law 11 static safety, and literal assertions, returned as PASS/FAIL/INSUFFICIENT_EVIDENCE with a signed, offline-verifiable receipt",
+    "input": {
+      "patch": "Required unified diff (the delivered artifact).",
+      "path_policy": "Optional {allowed_paths, banned_paths}.",
+      "assertions": "Optional [{type: contains|prohibits, pattern, message?}]; pattern is a JavaScript regular expression (1..256 chars) tested against added lines, and an invalid pattern fails the contract.",
+      "artifact_sha256": "Optional artifact binding.",
+      "acceptance_contract_hash": "Optional pinned-contract binding.",
+      "job_id": "Optional opaque reference echoed in the receipt."
+    },
+    "authentication": {
+      "discovery": "none",
+      "free_evaluation": "none",
+      "paid_execution": "Operator-authorized x402 V2 payment signature; no agent-passport prerequisite."
+    },
+    "free_evaluation": {
+      "authentication": "none",
+      "price_atomic": "0",
+      "method": "GET",
+      "endpoint": "https://platform.gleephoenix.com/agents/services.json?service=patch_verification&evaluate=pass&ref=task_first_patch_20261011",
+      "cases": [
+        {
+          "id": "pass",
+          "endpoint": "https://platform.gleephoenix.com/agents/services.json?service=patch_verification&evaluate=pass&ref=task_first_patch_20261011"
+        },
+        {
+          "id": "fail",
+          "endpoint": "https://platform.gleephoenix.com/agents/services.json?service=patch_verification&evaluate=fail&ref=task_first_patch_20261011"
+        },
+        {
+          "id": "insufficient",
+          "endpoint": "https://platform.gleephoenix.com/agents/services.json?service=patch_verification&evaluate=insufficient&ref=task_first_patch_20261011"
+        }
+      ],
+      "scope": "Compute a verdict for one fixed synthetic example using the same static verifier as paid execution. Customer-supplied patches and assertions are not accepted here.",
+      "signed_receipt": false,
+      "payment_execution": false,
+      "attribution": "Copy response.observation.discovery_source into the X-Discovery-Source header of an authorized paid invocation to link the request. This is caller-supplied attribution, not evidence of an independent agent."
+    },
+    "example_invocation": {
+      "method": "POST",
+      "url": "https://platform.gleephoenix.com/api/x402/verify/patch",
+      "content_type": "application/json",
+      "payment": "An unpaid POST returns a payment challenge when the service is ready.",
+      "body": {
+        "patch": "--- a/src/example.js\n+++ b/src/example.js\n@@ -1 +1 @@\n-old\n+new\n",
+        "path_policy": {
+          "allowed_paths": [
+            "src/"
+          ]
+        },
+        "assertions": [
+          {
+            "type": "contains",
+            "pattern": "^new$"
+          }
+        ]
+      }
+    },
+    "verdicts": [
+      "PASS",
+      "FAIL",
+      "INSUFFICIENT_EVIDENCE"
+    ],
+    "verdict_rules": {
+      "PASS": "every declared acceptance condition evaluated and passed (score >= 80, no FATAL/CRITICAL finding)",
+      "FAIL": "a declared acceptance condition failed, or the declared contract is malformed",
+      "INSUFFICIENT_EVIDENCE": "a declared acceptance condition cannot be evaluated by v0; no pass/fail claim is made"
+    },
+    "receipt": {
+      "schema": "glee.acceptance_receipt.v0",
+      "keys": "https://platform.gleephoenix.com/.well-known/glee-receipt-keys",
+      "verification": {
+        "canonicalization": "Recursively sort object keys; compact JSON; exclude the receipt.signature field.",
+        "digest": "SHA-256 hex of the canonical JSON (UTF-8).",
+        "signature": "Ed25519 over the UTF-8 bytes of the digest hex string.",
+        "keys": "GET /.well-known/glee-receipt-keys"
+      }
+    },
+    "limitations": [
+      "No patch application, code execution, or runtime guarantee",
+      "No proof of program correctness; static structural and policy checks only",
+      "Binary diffs, quoted paths, and rename-only changes are unsupported",
+      "Commit/URL/HTTP artifact bindings are not resolvable in v0 and yield INSUFFICIENT_EVIDENCE"
+    ],
+    "docs": "https://platform.gleephoenix.com/docs/x402",
+    "x402_catalog": "https://platform.gleephoenix.com/.well-known/x402"
+  }
+}
