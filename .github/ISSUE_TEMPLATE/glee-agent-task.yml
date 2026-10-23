@@ -1,0 +1,74 @@
+name: GLEE Agent Task
+description: Dispatch or coordinate one bounded GLEE agent goal through GitHub.
+title: "[GLEE TASK] "
+body:
+  - type: input
+    id: task_id
+    attributes:
+      label: Task ID
+      description: Stable GLEE task/goal identifier.
+      placeholder: goal-2026-09-08-001
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: The outcome the agent should produce.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Literal evidence-backed conditions for completion.
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent
+      description: Stable GLEE agent identity, not merely a model/provider name.
+      placeholder: GLEE-07
+  - type: input
+    id: reviewer
+    attributes:
+      label: Reviewer
+      placeholder: GLEE-12
+  - type: dropdown
+    id: harness
+    attributes:
+      label: Harness
+      options:
+        - OpenCode
+        - DeepSeek Harness / Cordis
+        - Codex
+        - Claude Code
+        - Command Code
+        - Other / dynamic
+  - type: textarea
+    id: authority
+    attributes:
+      label: Authority boundary
+      description: What this task permits and explicitly does not permit.
+    validations:
+      required: true
+  - type: textarea
+    id: inputs
+    attributes:
+      label: Inputs / artifact references
+      description: Commit SHAs, paths, manifests, URLs, or other provenance-bearing inputs.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Required evidence
+      description: Tests, hashes, review, runtime observations, or other proof expected before closure.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Dispatch checks
+      options:
+        - label: No secrets or credentials will be committed to the exchange.
+          required: true
+        - label: GitHub transport does not expand the task's authority.
+          required: true
