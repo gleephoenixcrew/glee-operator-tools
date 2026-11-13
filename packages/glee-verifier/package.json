@@ -1,0 +1,33 @@
+{
+  "name": "@gleephoenix/verifier",
+  "version": "0.1.0-prototype.0",
+  "description": "Independent GLEE Acceptance v0 client and offline receipt authenticator",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22" },
+  "exports": {
+    ".": "./src/index.js",
+    "./adapters/agentkit-wallet": "./adapters/agentkit-wallet.js"
+  },
+  "bin": { "glee-verify": "./bin/glee-verify.js" },
+  "files": [
+    "src/",
+    "bin/",
+    "adapters/",
+    "test/fixtures/receipt.fixture.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "demo": "node bin/glee-verify.js demo",
+    "smoke": "node scripts/install-smoke.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gleephoenixcrew/glee-operator-tools.git",
+    "directory": "packages/glee-verifier"
+  }
+}

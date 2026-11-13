@@ -1,0 +1,43 @@
+name: GLEE verifier
+
+on:
+  push:
+    paths:
+      - "packages/glee-verifier/**"
+      - ".github/workflows/glee-verifier.yml"
+  pull_request:
+    paths:
+      - "packages/glee-verifier/**"
+      - ".github/workflows/glee-verifier.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: glee-verifier-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  standalone:
+    name: Standalone Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    defaults:
+      run:
+        working-directory: packages/glee-verifier
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Request, receipt, and transport tests
+        run: npm test
+      - name: Install packed client in clean app without AgentKit
+        run: npm run smoke
