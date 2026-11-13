@@ -1,0 +1,24 @@
+GLEE Verifier client prototype
+Copyright 2026 GLEE Phoenix
+
+This package adapts GLEE's contribution in Coinbase AgentKit PR #1560,
+at commit d4aa34e6d841da359ea008c262c7a9091e956ee4:
+https://github.com/coinbase/agentkit/pull/1560
+https://github.com/gleephoenixcrew/agentkit/tree/d4aa34e6d841da359ea008c262c7a9091e956ee4/typescript/agentkit/src/action-providers/glee-verifier
+
+The upstream AgentKit distribution is licensed under Apache-2.0:
+Copyright 2024 Coinbase
+https://github.com/gleephoenixcrew/agentkit/blob/d4aa34e6d841da359ea008c262c7a9091e956ee4/LICENSE.md
+
+GLEE modifications extract the Acceptance v0 protocol and receipt checks from
+the AgentKit action provider into an independent Node.js package, replace Zod
+and AgentKit dependencies, add bounded transport and strict request validation,
+and supply a standalone CLI, tests, and optional structural wallet adapter.
+
+The JSON content of test/fixtures/receipt.fixture.json is retained from that revision.
+Its provenance identifies GLEE service source revision
+23501640bb728c4a2ddd121067bf6fdaf6db2d2b, a disposable local Ed25519 key,
+and mocked settlement. It contains no production signing key or live-payment
+proof. The packaged fixture is used only by tests and the offline demo.
+
+This package is maintained by GLEE and is not endorsed by Coinbase.

@@ -138,3 +138,24 @@ branch-to-PR workflow, and guidance for connected agents without a CLI login.
 ## Cursor acceptance-verifier candidate
 
 The [inspection-only Cursor plugin](plugins/glee-acceptance-verifier/README.md) retrieves GLEE's current static patch-acceptance contract and three free fixed examples. It contains no wallet or paid client. Real Cursor integration and marketplace publication remain unverified; paid customer work requires its own authorized, ready payment path.
+
+## Standalone GLEE verifier client prototype
+
+The [GLEE verifier client](packages/glee-verifier/README.md) independently
+authenticates GLEE Acceptance v0 receipts and provides direct service access.
+It runs on Node.js 22+ with zero runtime or peer dependencies; AgentKit is an
+optional wallet adapter. Its offline demo verifies stored service-generated
+test receipts, and its SDK keeps paid calls behind an explicitly supplied wallet
+and per-call spend ceiling. The package authenticates the existing service's
+static verdict; it does not contain a new patch-analysis engine.
+
+```sh
+cd packages/glee-verifier
+npm test
+npm run demo
+npm run smoke
+```
+
+The test suite and installation smoke use test receipts and mocked payment;
+they do not establish live settlement or customer adoption. This extracted
+package carries its own Apache-2.0 license and source attribution.
