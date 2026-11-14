@@ -39,16 +39,22 @@
     },
     "ack": {
       "type": "object",
-      "required": ["schema", "task_id", "message_id", "agent", "acked_at", "manifest_sha256"],
+      "required": ["schema", "task_id", "message_id", "agent", "acked_at", "manifest_sha256", "verified", "files"],
       "properties": {
         "schema": {"const": "glee.exchange.ack.v1"},
+        "task_id": {"$ref": "#/$defs/id"},
+        "message_id": {"$ref": "#/$defs/id"},
+        "agent": {"$ref": "#/$defs/id"},
+        "acked_at": {"type": "string", "format": "date-time"},
+        "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "verified": {
           "description": "true only when the recipient hashed the transferred files against the manifest at ACK time",
-          "type": "boolean"
+          "const": true
         },
         "files": {
           "description": "per-file evidence the recipient verified before acknowledging",
           "type": "array",
+          "minItems": 1,
           "items": {
             "type": "object",
             "required": ["path", "bytes", "sha256"],

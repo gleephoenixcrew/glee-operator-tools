@@ -52,7 +52,9 @@ glee-exchange verify --task <task_id> --message <message_id>
 glee-exchange ack --task <task_id> --message <message_id> --agent <agent_id>
 ```
 
-An acknowledgement proves the exact bytes were present at ACK time. It does not prove the file was read, reviewed, or accepted; that belongs in a receipt.
+An acknowledgement written by this CLI records that the exact bytes were verified at ACK time. Every later inbox or verification check validates the ACK's task, message, recipient, schema, manifest hash, and file hashes again. Same-length corruption and malformed or mismatched ACKs remain pending. An ACK is not a cryptographic signature or proof that a file was read, reviewed, or accepted; record review and acceptance separately in a receipt.
+
+If an existing ACK is stale or predates byte verification, do not overwrite it silently. Inspect and archive it outside the canonical `acks/<message_id>.json` path, retain that evidence in Git, then verify the restored transfer and acknowledge as its recipient. `verify` alone does not repair an invalid ACK. Restoring the original bytes after artifact corruption can make an otherwise valid ACK usable again without replacing it.
 
 ## Completion and handoff
 

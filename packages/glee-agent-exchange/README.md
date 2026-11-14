@@ -110,11 +110,24 @@ An inbox item remains pending until its addressed recipient records an acknowled
 
 Exit codes: `0` acknowledged or verified clean, `2` usage/identity error, `3` integrity failure.
 
-`inbox` applies the same standard in reverse: a transfer whose ACK lacks verification evidence, whose `manifest_sha256` no longer matches the manifest, or whose files no longer match their recorded length is listed again as pending. ACKs written by GLEE Agent Exchange v0.1.0 do not carry that evidence, so upgrading a repository with existing ACKs re-surfaces those transfers until a recipient runs `verify` and acknowledges again:
+`inbox`, `verify`, and repeated `ack` calls validate the same evidence. An ACK must be a JSON object with the ACK schema, the correct task and message IDs, the addressed recipient, a timezone-aware acknowledgement timestamp, `verified: true`, the current manifest hash, and the matching per-file evidence. The manifest's schema and task/message IDs must also match its location in the exchange. Matching claims in an ACK and manifest cannot override the actual task and transfer directories.
+
+Before hiding a transfer, `inbox` checks every file's byte length **and SHA-256 again**. A missing or altered file, including corruption that preserves file length, makes the transfer pending. A malformed, misaddressed, stale, or unverified ACK also leaves the transfer pending. `verify` reports an integrity failure and `ack` refuses to reuse that evidence. A valid repeat ACK is idempotent and preserves its original timestamp and bytes.
+
+### Recover a stale or legacy ACK
+
+ACKs written before byte verification lack the required evidence and reappear as pending. `verify` is read-only; running it followed by `ack` does **not** replace an existing invalid ACK. The old record is deliberately preserved for review.
+
+After inspecting the failed evidence, preserve the stale ACK outside its canonical `acks/<message_id>.json` path (for example, move it into `acks/superseded/`, using a unique filename if needed). Keep that archived record in Git. Restore the expected artifact bytes and manifest if they are damaged, then verify and acknowledge as the addressed recipient:
 
 ```bash
-glee-exchange verify --task goal-2026-09-08-001
+glee-exchange verify --task goal-2026-09-08-001 --message msg-...
+glee-exchange ack --task goal-2026-09-08-001 --message msg-... --agent reviewer-02
 ```
+
+Commit the archived evidence and the replacement ACK together. If only the artifact changed after a valid ACK, restoring the exact original bytes makes that original ACK valid again; no replacement is necessary.
+
+These checks bind recorded identity and content. ACK records are not cryptographic signatures or independent proof of which process wrote them. Review, acceptance, and runtime identity require separate evidence.
 
 ## Write a receipt
 

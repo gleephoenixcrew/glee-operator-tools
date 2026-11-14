@@ -63,6 +63,8 @@ def manifest_problems(root: Path, manifest: dict, *, verify_hash: bool = True) -
     """Return every reason the artifact on disk fails to match its manifest."""
     root = root.resolve()
     problems: list[str] = []
+    if not isinstance(manifest, dict):
+        return ["manifest is not an object"]
     files = manifest.get("files")
     if not isinstance(files, list) or not files:
         return ["manifest lists no files"]
@@ -103,11 +105,49 @@ def _ack_files(manifest: dict) -> list[dict]:
     ]
 
 
+def _manifest_identity_problems(manifest: dict, manifest_path: Path) -> list[str]:
+    """Bind a manifest to the task and transfer actually being inspected."""
+    if not isinstance(manifest, dict):
+        return ["manifest is not an object"]
+    expected = {
+        "schema": "glee.exchange.message.v1",
+        "task_id": manifest_path.parents[2].name,
+        "message_id": manifest_path.parent.name,
+    }
+    problems = [
+        f"manifest {field} mismatch (expected {value!r}, found {manifest.get(field)!r})"
+        for field, value in expected.items()
+        if manifest.get(field) != value
+    ]
+    recipient = manifest.get("to")
+    if not isinstance(recipient, str) or not ID_RE.fullmatch(recipient):
+        problems.append("manifest has no valid recipient")
+    return problems
+
+
 def _ack_proves_delivery(root: Path, ack_path: Path, manifest: dict, manifest_path: Path) -> bool:
-    """True only if the ACK was written after verifying these exact bytes."""
+    """Accept bound ACK evidence only while the exact artifact bytes still match."""
     try:
         ack = _json_read(ack_path)
     except (OSError, ValueError):
+        return False
+    if not isinstance(ack, dict) or _manifest_identity_problems(manifest, manifest_path):
+        return False
+    expected = {
+        "schema": "glee.exchange.ack.v1",
+        "task_id": manifest["task_id"],
+        "message_id": manifest["message_id"],
+        "agent": manifest["to"],
+    }
+    if any(ack.get(field) != value for field, value in expected.items()):
+        return False
+    acked_at = ack.get("acked_at")
+    if not isinstance(acked_at, str):
+        return False
+    try:
+        if datetime.fromisoformat(acked_at.replace("Z", "+00:00")).tzinfo is None:
+            return False
+    except ValueError:
         return False
     if ack.get("verified") is not True:
         return False
@@ -115,7 +155,7 @@ def _ack_proves_delivery(root: Path, ack_path: Path, manifest: dict, manifest_pa
         return False
     if ack.get("files") != _ack_files(manifest):
         return False
-    return not manifest_problems(root, manifest, verify_hash=False)
+    return not manifest_problems(root, manifest)
 
 
 def task_dir(root: Path, task_id: str) -> Path:
@@ -182,9 +222,11 @@ def inbox(root: Path, recipient: str) -> list[dict]:
         return pending
     for manifest_path in sorted(tasks.glob("*/transfers/*/manifest.json")):
         manifest = _json_read(manifest_path)
+        if not isinstance(manifest, dict):
+            raise TransferIntegrityError(f"manifest is not an object: {manifest_path}")
         if manifest.get("to") != recipient:
             continue
-        ack = manifest_path.parents[2] / "acks" / f"{manifest['message_id']}.json"
+        ack = manifest_path.parents[2] / "acks" / f"{manifest_path.parent.name}.json"
         if not ack.exists():
             pending.append(manifest)
         elif not _ack_proves_delivery(root, ack, manifest, manifest_path):
@@ -200,6 +242,9 @@ def acknowledge(root: Path, task_id: str, message_id: str, agent: str) -> Path:
     if not manifest_path.exists():
         raise FileNotFoundError(f"unknown message: {message_id}")
     manifest = _json_read(manifest_path)
+    identity_problems = _manifest_identity_problems(manifest, manifest_path)
+    if identity_problems:
+        raise TransferIntegrityError("; ".join(identity_problems))
     if manifest.get("to") != agent:
         raise PermissionError(f"message is addressed to {manifest.get('to')}, not {agent}")
 
@@ -236,7 +281,8 @@ def verify_message(root: Path, task_id: str, message_id: str) -> list[str]:
     if not manifest_path.exists():
         raise FileNotFoundError(f"unknown message: {message_id}")
     manifest = _json_read(manifest_path)
-    problems = manifest_problems(root, manifest)
+    problems = _manifest_identity_problems(manifest, manifest_path)
+    problems.extend(manifest_problems(root, manifest))
     ack = manifest_path.parents[2] / "acks" / f"{message_id}.json"
     if ack.exists() and not _ack_proves_delivery(root, ack, manifest, manifest_path):
         problems.append(f"{message_id}: ack does not prove these bytes (stale or unverified)")
@@ -246,7 +292,7 @@ def verify_message(root: Path, task_id: str, message_id: str) -> list[str]:
 def verify_task(root: Path, task_id: str) -> dict[str, list[str]]:
     failures: dict[str, list[str]] = {}
     for manifest_path in sorted(task_dir(root, task_id).glob("transfers/*/manifest.json")):
-        message_id = _json_read(manifest_path).get("message_id", manifest_path.parent.name)
+        message_id = manifest_path.parent.name
         problems = verify_message(root, task_id, message_id)
         if problems:
             failures[message_id] = problems
