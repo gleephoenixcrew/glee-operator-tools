@@ -15,6 +15,14 @@ ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 RECEIPT_STATUSES = {"working", "blocked", "review", "accepted", "rejected"}
 
 
+class TransferIntegrityError(ValueError):
+    """The bytes on disk do not match the manifest that claims to describe them.
+
+    An acknowledgement is only meaningful if the recipient holds the exact artifact.
+    Raising this instead of writing an ACK keeps the transfer pending.
+    """
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -42,6 +50,72 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _under_root(root: Path, rel: str) -> Path:
+    candidate = (root / rel).resolve()
+    if candidate != root and root not in candidate.parents:
+        raise TransferIntegrityError(f"manifest path escapes repository root: {rel!r}")
+    return candidate
+
+
+def manifest_problems(root: Path, manifest: dict, *, verify_hash: bool = True) -> list[str]:
+    """Return every reason the artifact on disk fails to match its manifest."""
+    root = root.resolve()
+    problems: list[str] = []
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        return ["manifest lists no files"]
+    for index, entry in enumerate(files):
+        if not isinstance(entry, dict):
+            problems.append(f"files[{index}]: not an object")
+            continue
+        rel = entry.get("path")
+        if not isinstance(rel, str) or not rel:
+            problems.append(f"files[{index}]: missing path")
+            continue
+        try:
+            candidate = _under_root(root, rel)
+        except TransferIntegrityError as exc:
+            problems.append(str(exc))
+            continue
+        if not candidate.is_file():
+            problems.append(f"{rel}: missing from disk")
+            continue
+        expected_bytes = entry.get("bytes")
+        found_bytes = candidate.stat().st_size
+        if expected_bytes != found_bytes:
+            problems.append(f"{rel}: byte length mismatch (manifest {expected_bytes}, disk {found_bytes})")
+            continue
+        if verify_hash:
+            expected_sha = entry.get("sha256")
+            found_sha = _sha256(candidate)
+            if expected_sha != found_sha:
+                problems.append(f"{rel}: sha256 mismatch (manifest {expected_sha}, disk {found_sha})")
+    return problems
+
+
+def _ack_files(manifest: dict) -> list[dict]:
+    return [
+        {"path": entry.get("path"), "bytes": entry.get("bytes"), "sha256": entry.get("sha256")}
+        for entry in manifest.get("files", [])
+        if isinstance(entry, dict)
+    ]
+
+
+def _ack_proves_delivery(root: Path, ack_path: Path, manifest: dict, manifest_path: Path) -> bool:
+    """True only if the ACK was written after verifying these exact bytes."""
+    try:
+        ack = _json_read(ack_path)
+    except (OSError, ValueError):
+        return False
+    if ack.get("verified") is not True:
+        return False
+    if ack.get("manifest_sha256") != _sha256(manifest_path):
+        return False
+    if ack.get("files") != _ack_files(manifest):
+        return False
+    return not manifest_problems(root, manifest, verify_hash=False)
 
 
 def task_dir(root: Path, task_id: str) -> Path:
@@ -113,6 +187,9 @@ def inbox(root: Path, recipient: str) -> list[dict]:
         ack = manifest_path.parents[2] / "acks" / f"{manifest['message_id']}.json"
         if not ack.exists():
             pending.append(manifest)
+        elif not _ack_proves_delivery(root, ack, manifest, manifest_path):
+            # A stale, hand-written, or pre-verification ACK does not prove delivery.
+            pending.append(manifest)
     return pending
 
 
@@ -125,8 +202,21 @@ def acknowledge(root: Path, task_id: str, message_id: str, agent: str) -> Path:
     manifest = _json_read(manifest_path)
     if manifest.get("to") != agent:
         raise PermissionError(f"message is addressed to {manifest.get('to')}, not {agent}")
+
+    problems = manifest_problems(root, manifest)
+    if problems:
+        raise TransferIntegrityError(
+            f"refusing to acknowledge {message_id}; the transfer does not match its manifest: "
+            + "; ".join(problems)
+        )
+
     path = task_dir(root, task_id) / "acks" / f"{message_id}.json"
     if path.exists():
+        if not _ack_proves_delivery(root, path, manifest, manifest_path):
+            raise TransferIntegrityError(
+                f"existing ack for {message_id} does not match this transfer; "
+                "verify the bytes, then replace the stale ack explicitly"
+            )
         return path
     _json_write(path, {
         "schema": "glee.exchange.ack.v1",
@@ -135,8 +225,32 @@ def acknowledge(root: Path, task_id: str, message_id: str, agent: str) -> Path:
         "agent": agent,
         "acked_at": _now(),
         "manifest_sha256": _sha256(manifest_path),
+        "verified": True,
+        "files": _ack_files(manifest),
     })
     return path
+
+
+def verify_message(root: Path, task_id: str, message_id: str) -> list[str]:
+    manifest_path = task_dir(root, task_id) / "transfers" / _check_id(message_id, "message_id") / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"unknown message: {message_id}")
+    manifest = _json_read(manifest_path)
+    problems = manifest_problems(root, manifest)
+    ack = manifest_path.parents[2] / "acks" / f"{message_id}.json"
+    if ack.exists() and not _ack_proves_delivery(root, ack, manifest, manifest_path):
+        problems.append(f"{message_id}: ack does not prove these bytes (stale or unverified)")
+    return problems
+
+
+def verify_task(root: Path, task_id: str) -> dict[str, list[str]]:
+    failures: dict[str, list[str]] = {}
+    for manifest_path in sorted(task_dir(root, task_id).glob("transfers/*/manifest.json")):
+        message_id = _json_read(manifest_path).get("message_id", manifest_path.parent.name)
+        problems = verify_message(root, task_id, message_id)
+        if problems:
+            failures[message_id] = problems
+    return failures
 
 
 def write_receipt(root: Path, task_id: str, agent: str, status: str, summary: str, evidence: Iterable[str]) -> Path:
@@ -186,6 +300,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--message", required=True)
     p.add_argument("--agent", required=True)
 
+    p = sub.add_parser("verify", help="re-verify transferred bytes against their manifests")
+    p.add_argument("--task", required=True)
+    p.add_argument("--message", default=None, help="verify one message (default: whole task)")
+
     p = sub.add_parser("receipt", help="write an evidence receipt")
     p.add_argument("--task", required=True)
     p.add_argument("--agent", required=True)
@@ -216,10 +334,23 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "ack":
             path = acknowledge(root, args.task, args.message, args.agent)
             print(path.relative_to(root))
+        elif args.command == "verify":
+            if args.message:
+                failures = {args.message: verify_message(root, args.task, args.message)}
+                failures = {k: v for k, v in failures.items() if v}
+            else:
+                failures = verify_task(root, args.task)
+            for message_id, problems in failures.items():
+                for problem in problems:
+                    print(f"{message_id}: {problem}", file=sys.stderr)
+            return 0 if not failures else 3
         elif args.command == "receipt":
             path = write_receipt(root, args.task, args.agent, args.status, args.summary, args.evidence)
             print(path.relative_to(root))
         return 0
+    except TransferIntegrityError as exc:
+        print(f"glee-exchange: {exc}", file=sys.stderr)
+        return 3
     except (ValueError, FileNotFoundError, FileExistsError, PermissionError) as exc:
         print(f"glee-exchange: {exc}", file=sys.stderr)
         return 2

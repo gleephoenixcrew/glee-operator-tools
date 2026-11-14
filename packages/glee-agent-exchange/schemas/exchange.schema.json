@@ -40,7 +40,26 @@
     "ack": {
       "type": "object",
       "required": ["schema", "task_id", "message_id", "agent", "acked_at", "manifest_sha256"],
-      "properties": {"schema": {"const": "glee.exchange.ack.v1"}}
+      "properties": {
+        "schema": {"const": "glee.exchange.ack.v1"},
+        "verified": {
+          "description": "true only when the recipient hashed the transferred files against the manifest at ACK time",
+          "type": "boolean"
+        },
+        "files": {
+          "description": "per-file evidence the recipient verified before acknowledging",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "bytes", "sha256"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "bytes": {"type": "integer", "minimum": 0},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        }
+      }
     },
     "receipt": {
       "type": "object",

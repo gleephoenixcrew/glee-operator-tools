@@ -96,6 +96,8 @@ The copied artifact is stored beside a manifest containing SHA-256 and byte leng
 ```bash
 glee-exchange inbox --to reviewer-02
 
+glee-exchange verify --task goal-2026-09-08-001 --message msg-...
+
 glee-exchange ack \
   --task goal-2026-09-08-001 \
   --message msg-... \
@@ -103,6 +105,16 @@ glee-exchange ack \
 ```
 
 An inbox item remains pending until its addressed recipient records an acknowledgement.
+
+`ack` is a **byte-level gate, not a bookkeeping flag**. Before writing the ACK it reads every file listed in the manifest and checks the byte length and SHA-256 recorded there. If anything is missing, truncated, or altered, the ACK is refused, nothing is written, and the transfer stays in the inbox. The ACK it does write carries `verified: true` plus the digest of every file, so a later reader can tell a verified acknowledgement from a bare one.
+
+Exit codes: `0` acknowledged or verified clean, `2` usage/identity error, `3` integrity failure.
+
+`inbox` applies the same standard in reverse: a transfer whose ACK lacks verification evidence, whose `manifest_sha256` no longer matches the manifest, or whose files no longer match their recorded length is listed again as pending. ACKs written by GLEE Agent Exchange v0.1.0 do not carry that evidence, so upgrading a repository with existing ACKs re-surfaces those transfers until a recipient runs `verify` and acknowledges again:
+
+```bash
+glee-exchange verify --task goal-2026-09-08-001
+```
 
 ## Write a receipt
 

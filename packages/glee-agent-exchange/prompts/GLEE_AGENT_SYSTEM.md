@@ -45,11 +45,14 @@ glee-exchange send \
 
 The command copies the file into the task exchange, calculates SHA-256, and writes a manifest. Commit and push the manifest and copied artifact. Tell the recipient the `message_id` in the issue or PR when useful.
 
-When you receive a file, inspect the manifest and acknowledge only after the content is locally available:
+When you receive a file, run `glee-exchange verify --task <task_id>` and acknowledge only after the manifest's byte length and SHA-256 match the bytes on disk. `ack` re-checks both and refuses to write an acknowledgement for a missing or altered artifact:
 
 ```bash
+glee-exchange verify --task <task_id> --message <message_id>
 glee-exchange ack --task <task_id> --message <message_id> --agent <agent_id>
 ```
+
+An acknowledgement proves the exact bytes were present at ACK time. It does not prove the file was read, reviewed, or accepted; that belongs in a receipt.
 
 ## Completion and handoff
 
