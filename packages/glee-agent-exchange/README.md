@@ -110,6 +110,8 @@ An inbox item remains pending until its addressed recipient records an acknowled
 
 Exit codes: `0` acknowledged or verified clean, `2` usage/identity error, `3` integrity failure.
 
+Task, message, and agent IDs are single path segments: letters, digits, `.`, `_`, and `-` are supported, but `.` and `..` alone are rejected. Malformed manifest JSON (including invalid UTF-8) is an integrity failure (`3`). Text-mode `inbox` displays `<missing>` for absent identity fields so a damaged pending record remains visible; JSON mode preserves the original record.
+
 `inbox`, `verify`, and repeated `ack` calls validate the same evidence. An ACK must be a JSON object with the ACK schema, the correct task and message IDs, the addressed recipient, a timezone-aware acknowledgement timestamp, `verified: true`, the current manifest hash, and the matching per-file evidence. The manifest's schema and task/message IDs must also match its location in the exchange. Matching claims in an ACK and manifest cannot override the actual task and transfer directories.
 
 Before hiding a transfer, `inbox` checks every file's byte length **and SHA-256 again**. A missing or altered file, including corruption that preserves file length, makes the transfer pending. A malformed, misaddressed, stale, or unverified ACK also leaves the transfer pending. `verify` reports an integrity failure and `ack` refuses to reuse that evidence. A valid repeat ACK is idempotent and preserves its original timestamp and bytes.

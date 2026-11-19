@@ -9,7 +9,7 @@
     {"$ref": "#/$defs/receipt"}
   ],
   "$defs": {
-    "id": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+    "id": {"type": "string", "pattern": "^(?!\\.{1,2}$)[A-Za-z0-9._-]+$"},
     "task": {
       "type": "object",
       "required": ["schema", "task_id", "from", "to", "goal", "acceptance", "created_at"],

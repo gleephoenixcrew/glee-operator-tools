@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+ID_RE = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9._-]+$")
 RECEIPT_STATUSES = {"working", "blocked", "review", "accepted", "rejected"}
 
 
@@ -41,7 +41,10 @@ def _json_write(path: Path, payload: dict) -> None:
 
 
 def _json_read(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise TransferIntegrityError(f"malformed JSON record {path}: {exc}") from exc
 
 
 def _sha256(path: Path) -> str:
@@ -98,9 +101,12 @@ def manifest_problems(root: Path, manifest: dict, *, verify_hash: bool = True) -
 
 
 def _ack_files(manifest: dict) -> list[dict]:
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        return []
     return [
         {"path": entry.get("path"), "bytes": entry.get("bytes"), "sha256": entry.get("sha256")}
-        for entry in manifest.get("files", [])
+        for entry in files
         if isinstance(entry, dict)
     ]
 
@@ -375,7 +381,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(messages, indent=2, sort_keys=True))
             else:
                 for message in messages:
-                    print(f"{message['message_id']}\t{message['task_id']}\t{message['from']}\t{message.get('note','')}")
+                    print(
+                        f"{message.get('message_id', '<missing>')}\t"
+                        f"{message.get('task_id', '<missing>')}\t"
+                        f"{message.get('from', '<missing>')}\t"
+                        f"{message.get('note', '')}"
+                    )
             return 0 if messages else 1
         elif args.command == "ack":
             path = acknowledge(root, args.task, args.message, args.agent)
