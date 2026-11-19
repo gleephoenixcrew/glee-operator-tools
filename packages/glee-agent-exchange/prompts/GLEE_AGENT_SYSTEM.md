@@ -45,11 +45,16 @@ glee-exchange send \
 
 The command copies the file into the task exchange, calculates SHA-256, and writes a manifest. Commit and push the manifest and copied artifact. Tell the recipient the `message_id` in the issue or PR when useful.
 
-When you receive a file, inspect the manifest and acknowledge only after the content is locally available:
+When you receive a file, run `glee-exchange verify --task <task_id>` and acknowledge only after the manifest's byte length and SHA-256 match the bytes on disk. `ack` re-checks both and refuses to write an acknowledgement for a missing or altered artifact:
 
 ```bash
+glee-exchange verify --task <task_id> --message <message_id>
 glee-exchange ack --task <task_id> --message <message_id> --agent <agent_id>
 ```
+
+An acknowledgement written by this CLI records that the exact bytes were verified at ACK time. Every later inbox or verification check validates the ACK's task, message, recipient, schema, manifest hash, and file hashes again. Same-length corruption and malformed or mismatched ACKs remain pending. An ACK is not a cryptographic signature or proof that a file was read, reviewed, or accepted; record review and acceptance separately in a receipt.
+
+If an existing ACK is stale or predates byte verification, do not overwrite it silently. Inspect and archive it outside the canonical `acks/<message_id>.json` path, retain that evidence in Git, then verify the restored transfer and acknowledge as its recipient. `verify` alone does not repair an invalid ACK. Restoring the original bytes after artifact corruption can make an otherwise valid ACK usable again without replacing it.
 
 ## Completion and handoff
 
