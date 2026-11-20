@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -21,6 +22,22 @@ class TransferIntegrityError(ValueError):
     An acknowledgement is only meaningful if the recipient holds the exact artifact.
     Raising this instead of writing an ACK keeps the transfer pending.
     """
+
+
+@dataclass(frozen=True)
+class InboxEntry:
+    """A pending manifest and its observed location, kept separate from its claims."""
+
+    manifest_path: Path
+    manifest: dict
+
+
+@dataclass
+class InboxScan:
+    """Readable pending entries plus errors that make the scan incomplete."""
+
+    entries: list[InboxEntry]
+    errors: list[str]
 
 
 def _now() -> str:
@@ -121,7 +138,7 @@ def _manifest_identity_problems(manifest: dict, manifest_path: Path) -> list[str
         "message_id": manifest_path.parent.name,
     }
     problems = [
-        f"manifest {field} mismatch (expected {value!r}, found {manifest.get(field)!r})"
+        f"manifest {field} mismatch (expected {value!r}, found {manifest.get(field, '<missing>')!r})"
         for field, value in expected.items()
         if manifest.get(field) != value
     ]
@@ -220,25 +237,48 @@ def send_file(root: Path, task_id: str, sender: str, recipient: str, source: Pat
     return manifest_path
 
 
-def inbox(root: Path, recipient: str) -> list[dict]:
+def scan_inbox(root: Path, recipient: str) -> InboxScan:
+    """Scan every manifest without letting one unreadable record hide other work.
+
+    An unreadable record has no trustworthy recipient, so report it even when
+    the readable messages belong to someone else. No records are changed.
+    """
+    root = root.resolve()
     recipient = _check_id(recipient, "recipient")
-    pending: list[dict] = []
+    result = InboxScan(entries=[], errors=[])
     tasks = root / "exchange" / "tasks"
     if not tasks.exists():
-        return pending
+        return result
     for manifest_path in sorted(tasks.glob("*/transfers/*/manifest.json")):
-        manifest = _json_read(manifest_path)
-        if not isinstance(manifest, dict):
-            raise TransferIntegrityError(f"manifest is not an object: {manifest_path}")
+        try:
+            manifest = _json_read(manifest_path)
+            if not isinstance(manifest, dict):
+                raise TransferIntegrityError("manifest is not an object")
+        except (OSError, TransferIntegrityError) as exc:
+            result.errors.append(f"{manifest_path.relative_to(root)}: {exc}")
+            continue
         if manifest.get("to") != recipient:
             continue
         ack = manifest_path.parents[2] / "acks" / f"{manifest_path.parent.name}.json"
-        if not ack.exists():
-            pending.append(manifest)
-        elif not _ack_proves_delivery(root, ack, manifest, manifest_path):
-            # A stale, hand-written, or pre-verification ACK does not prove delivery.
-            pending.append(manifest)
-    return pending
+        try:
+            if ack.exists() and _ack_proves_delivery(root, ack, manifest, manifest_path):
+                continue
+        except OSError as exc:
+            result.errors.append(f"{manifest_path.relative_to(root)}: cannot validate ACK: {exc}")
+        # A stale, unreadable, or unverified ACK does not prove delivery.
+        result.entries.append(InboxEntry(manifest_path=manifest_path, manifest=manifest))
+    return result
+
+
+def inbox(root: Path, recipient: str) -> list[dict]:
+    """Return raw pending manifests, raising if the scan is incomplete.
+
+    Use scan_inbox() when the caller can consume partial entries and errors.
+    """
+    result = scan_inbox(root, recipient)
+    if result.errors:
+        raise TransferIntegrityError("; ".join(result.errors))
+    return [entry.manifest for entry in result.entries]
 
 
 def acknowledge(root: Path, task_id: str, message_id: str, agent: str) -> Path:
@@ -376,18 +416,30 @@ def main(argv: list[str] | None = None) -> int:
             path = send_file(root, args.task, args.sender, args.recipient, args.file, args.note)
             print(path.relative_to(root))
         elif args.command == "inbox":
-            messages = inbox(root, args.recipient)
+            result = scan_inbox(root, args.recipient)
             if args.json:
-                print(json.dumps(messages, indent=2, sort_keys=True))
+                print(json.dumps([entry.manifest for entry in result.entries], indent=2, sort_keys=True))
             else:
-                for message in messages:
-                    print(
-                        f"{message.get('message_id', '<missing>')}\t"
-                        f"{message.get('task_id', '<missing>')}\t"
+                for entry in result.entries:
+                    message, path = entry.manifest, entry.manifest_path
+                    row = (
+                        f"{path.parent.name}\t"
+                        f"{path.parents[2].name}\t"
                         f"{message.get('from', '<missing>')}\t"
                         f"{message.get('note', '')}"
                     )
-            return 0 if messages else 1
+                    problems = _manifest_identity_problems(message, path)
+                    if problems:
+                        row += (
+                            f"\t[manifest identity mismatch; path={str(path.relative_to(root))!r}; "
+                            + "; ".join(problems) + "]"
+                        )
+                    print(row)
+            for error in result.errors:
+                print(f"glee-exchange: {error}", file=sys.stderr)
+            if result.errors:
+                return 3
+            return 0 if result.entries else 1
         elif args.command == "ack":
             path = acknowledge(root, args.task, args.message, args.agent)
             print(path.relative_to(root))
