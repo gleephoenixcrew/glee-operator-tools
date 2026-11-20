@@ -110,11 +110,48 @@ An inbox item remains pending until its addressed recipient records an acknowled
 
 Exit codes: `0` acknowledged or verified clean, `2` usage/identity error, `3` integrity failure.
 
-Task, message, and agent IDs are single path segments: letters, digits, `.`, `_`, and `-` are supported, but `.` and `..` alone are rejected. Malformed manifest JSON (including invalid UTF-8) is an integrity failure (`3`). Text-mode `inbox` displays `<missing>` for absent identity fields so a damaged pending record remains visible; JSON mode preserves the original record.
+Task, message, and agent IDs are single path segments: letters, digits, `.`, `_`, and `-` are supported, but `.` and `..` alone are rejected. Malformed manifest JSON (including invalid UTF-8) is an integrity failure (`3`).
 
 `inbox`, `verify`, and repeated `ack` calls validate the same evidence. An ACK must be a JSON object with the ACK schema, the correct task and message IDs, the addressed recipient, a timezone-aware acknowledgement timestamp, `verified: true`, the current manifest hash, and the matching per-file evidence. The manifest's schema and task/message IDs must also match its location in the exchange. Matching claims in an ACK and manifest cannot override the actual task and transfer directories.
 
 Before hiding a transfer, `inbox` checks every file's byte length **and SHA-256 again**. A missing or altered file, including corruption that preserves file length, makes the transfer pending. A malformed, misaddressed, stale, or unverified ACK also leaves the transfer pending. `verify` reports an integrity failure and `ack` refuses to reuse that evidence. A valid repeat ACK is idempotent and preserves its original timestamp and bytes.
+
+### Read an inbox with damaged manifests
+
+`inbox` scans every transfer. One unreadable manifest does not hide other readable
+pending messages: those messages are still printed on stdout, every unreadable
+manifest is reported by path on stderr, and the command returns `3`. This includes
+malformed JSON, invalid UTF-8, non-object JSON, and file read errors. An unreadable
+record has no trustworthy recipient, so it is reported even when it may belong to
+another agent. The scan never edits, repairs, or acknowledges a record.
+
+| Inbox exit code | Meaning |
+| --- | --- |
+| `0` | Scan completed and readable pending messages were listed |
+| `1` | Scan completed and no pending messages were found |
+| `2` | Invalid command arguments or recipient ID |
+| `3` | Scan incomplete; stdout contains any readable pending messages, stderr identifies failures |
+
+Text rows start with the message and task IDs from the actual transfer directory,
+followed by the claimed sender and note. Missing or inconsistent manifest identity
+adds a diagnostic containing the manifest path and the conflicting claims;
+absent fields are shown as `<missing>`. Use those directory IDs to locate and
+verify the damaged record. A readable identity mismatch stays pending and does
+not make the scan incomplete; `verify` and `ack` still reject that mismatch.
+Listing a pending item is never proof that it is safe to acknowledge.
+
+`inbox --json` keeps its existing array of original manifest objects, including
+missing, incorrect, or extra fields. It returns `[]` with exit `3` if no readable
+pending messages remain in an incomplete scan. Consumers must check the exit
+status and stderr as well as parse stdout; use text mode when a damaged record's
+actual location is needed.
+
+Python consumers can call `scan_inbox(root, recipient)` to receive `entries`
+(each with a separate `manifest_path` and original `manifest`) plus `errors`.
+Keeping observed paths separate prevents manifest fields from spoofing scan
+metadata. The existing `inbox(root, recipient)` API still returns raw manifest
+dictionaries on a complete scan and raises `TransferIntegrityError` if the scan
+is incomplete, so existing callers cannot silently accept partial results.
 
 ### Recover a stale or legacy ACK
 
